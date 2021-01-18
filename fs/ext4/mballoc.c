@@ -18,6 +18,7 @@
 #include <linux/backing-dev.h>
 #include <trace/events/ext4.h>
 
+#include <linux/iomap.h>
 /*
  * MUSTDO:
  *   - test ext4_ext_search_left() and ext4_ext_search_right()
@@ -5245,6 +5246,23 @@ do_more:
 				     GFP_NOFS|__GFP_NOFAIL);
 	if (err)
 		goto error_return;
+
+	/* Modified for zeroout data blocks while trucate for dax
+	 * */
+	if(IS_DAX(inode))
+	{
+		/* use iomap_zero_range need to find from and length */
+		struct iomap dax_iomap, srcmap;
+		loff_t written;
+		dax_iomap.addr = block << inode->i_blkbits;
+		dax_iomap.offset = 0;
+		dax_iomap.bdev = inode -> i_sb -> s_bdev;
+		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
+		srcmap.type = 2;
+
+		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
+			NULL, &dax_iomap, &srcmap);
+	}
 
 	/*
 	 * We need to make sure we don't reuse the freed block until after the

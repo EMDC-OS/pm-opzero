@@ -664,15 +664,22 @@ found:
 		 * unmap metadata before zeroing as otherwise writeback can
 		 * overwrite zeros with stale data from block device.
 		 */
-		if (flags & EXT4_GET_BLOCKS_ZERO &&
+		if	(!IS_DAX(inode) &&
+			flags & EXT4_GET_BLOCKS_ZERO &&
 		    map->m_flags & EXT4_MAP_MAPPED &&
 		    map->m_flags & EXT4_MAP_NEW) {
+
 			ret = ext4_issue_zeroout(inode, map->m_lblk,
-						 map->m_pblk, map->m_len);
+							 map->m_pblk, map->m_len);
 			if (ret) {
 				retval = ret;
 				goto out_sem;
 			}
+		}
+		else if (IS_DAX(inode)){
+			/* Modified for counting append block calls
+			 * */
+			
 		}
 
 		/*
