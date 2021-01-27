@@ -944,7 +944,7 @@ static int iomap_zero(struct inode *inode, loff_t pos, unsigned offset,
 	return iomap_write_end(inode, pos, bytes, bytes, page, iomap, srcmap);
 }
 
-static loff_t
+loff_t
 iomap_zero_range_actor(struct inode *inode, loff_t pos, loff_t count,
 		void *data, struct iomap *iomap, struct iomap *srcmap)
 {
@@ -979,6 +979,7 @@ iomap_zero_range_actor(struct inode *inode, loff_t pos, loff_t count,
 
 	return written;
 }
+EXPORT_SYMBOL_GPL(iomap_zero_range_actor);
 
 int
 iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,

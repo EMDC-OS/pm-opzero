@@ -45,6 +45,7 @@
 #include "xattr.h"
 #include "acl.h"
 #include "truncate.h"
+//#include "delay_truncate.h"
 
 #include <trace/events/ext4.h>
 
@@ -329,6 +330,173 @@ stop_handle:
 no_delete:
 	ext4_clear_inode(inode);	/* We must guarantee clearing of inode... */
 }
+
+void ext4_evict_zero_inode(struct inode *inode)
+{
+	handle_t *handle;
+	int err;
+	/*
+	 * Credits for final inode cleanup and freeing:
+	 * sb + inode (ext4_orphan_del()), block bitmap, group descriptor
+	 * (xattr block freeing), bitmap, group descriptor (inode freeing)
+	 */
+	int extra_credits = 6;
+	struct ext4_xattr_inode_array *ea_inode_array = NULL;
+
+	trace_ext4_evict_inode(inode);
+
+	if (inode->i_nlink) {
+		/*
+		 * When journalling data dirty buffers are tracked only in the
+		 * journal. So although mm thinks everything is clean and
+		 * ready for reaping the inode might still have some pages to
+		 * write in the running transaction or waiting to be
+		 * checkpointed. Thus calling jbd2_journal_invalidatepage()
+		 * (via truncate_inode_pages()) to discard these buffers can
+		 * cause data loss. Also even if we did not discard these
+		 * buffers, we would have no way to find them after the inode
+		 * is reaped and thus user could see stale data if he tries to
+		 * read them before the transaction is checkpointed. So be
+		 * careful and force everything to disk here... We use
+		 * ei->i_datasync_tid to store the newest transaction
+		 * containing inode's data.
+		 *
+		 * Note that directories do not have this problem because they
+		 * don't use page cache.
+		 */
+		if (inode->i_ino != EXT4_JOURNAL_INO &&
+		    ext4_should_journal_data(inode) &&
+		    (S_ISLNK(inode->i_mode) || S_ISREG(inode->i_mode)) &&
+		    inode->i_data.nrpages) {
+			journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
+			tid_t commit_tid = EXT4_I(inode)->i_datasync_tid;
+
+			jbd2_complete_transaction(journal, commit_tid);
+			filemap_write_and_wait(&inode->i_data);
+		}
+		truncate_inode_pages_final(&inode->i_data);
+
+		goto no_delete;
+	}
+
+	if (is_bad_inode(inode))
+		goto no_delete;
+	dquot_initialize(inode);
+
+	if (ext4_should_order_data(inode))
+		ext4_begin_ordered_truncate(inode, 0);
+	truncate_inode_pages_final(&inode->i_data);
+
+	/*
+	 * For inodes with journalled data, transaction commit could have
+	 * dirtied the inode. Flush worker is ignoring it because of I_FREEING
+	 * flag but we still need to remove the inode from the writeback lists.
+	 */
+	if (!list_empty_careful(&inode->i_io_list)) {
+		WARN_ON_ONCE(!ext4_should_journal_data(inode));
+		inode_io_list_del(inode);
+	}
+
+	/*
+	 * Protect us against freezing - iput() caller didn't have to have any
+	 * protection against it
+	 */
+	sb_start_intwrite(inode->i_sb);
+
+	if (!IS_NOQUOTA(inode))
+		extra_credits += EXT4_MAXQUOTAS_DEL_BLOCKS(inode->i_sb);
+
+	/*
+	 * Block bitmap, group descriptor, and inode are accounted in both
+	 * ext4_blocks_for_truncate() and extra_credits. So subtract 3.
+	 */
+	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE,
+			 ext4_blocks_for_truncate(inode) + extra_credits - 3);
+	if (IS_ERR(handle)) {
+		ext4_std_error(inode->i_sb, PTR_ERR(handle));
+		/*
+		 * If we're going to skip the normal cleanup, we still need to
+		 * make sure that the in-core orphan linked list is properly
+		 * cleaned up.
+		 */
+		ext4_orphan_del(NULL, inode);
+		sb_end_intwrite(inode->i_sb);
+		goto no_delete;
+	}
+
+	if (IS_SYNC(inode))
+		ext4_handle_sync(handle);
+
+	/*
+	 * Set inode->i_size to 0 before calling ext4_truncate(). We need
+	 * special handling of symlinks here because i_size is used to
+	 * determine whether ext4_inode_info->i_data contains symlink data or
+	 * block mappings. Setting i_size to 0 will remove its fast symlink
+	 * status. Erase i_data so that it becomes a valid empty block map.
+	 */
+	if (ext4_inode_is_fast_symlink(inode))
+		memset(EXT4_I(inode)->i_data, 0, sizeof(EXT4_I(inode)->i_data));
+	inode->i_size = 0;
+	err = ext4_mark_inode_dirty(handle, inode);
+	if (err) {
+		ext4_warning(inode->i_sb,
+			     "couldn't mark inode dirty (err %d)", err);
+		goto stop_handle;
+	}
+	if (inode->i_blocks) {
+		err = ext4_truncate_zero(inode);
+		if (err) {
+			ext4_error_err(inode->i_sb, -err,
+				       "couldn't truncate inode %lu (err %d)",
+				       inode->i_ino, err);
+			goto stop_handle;
+		}
+	}
+
+	/* Remove xattr references. */
+	err = ext4_xattr_delete_inode(handle, inode, &ea_inode_array,
+				      extra_credits);
+	if (err) {
+		ext4_warning(inode->i_sb, "xattr delete (err %d)", err);
+stop_handle:
+		ext4_journal_stop(handle);
+		ext4_orphan_del(NULL, inode);
+		sb_end_intwrite(inode->i_sb);
+		ext4_xattr_inode_array_free(ea_inode_array);
+		goto no_delete;
+	}
+
+	/*
+	 * Kill off the orphan record which ext4_truncate created.
+	 * AKPM: I think this can be inside the above `if'.
+	 * Note that ext4_orphan_del() has to be able to cope with the
+	 * deletion of a non-existent orphan - this is because we don't
+	 * know if ext4_truncate() actually created an orphan record.
+	 * (Well, we could do this if we need to, but heck - it works)
+	 */
+	ext4_orphan_del(handle, inode);
+	EXT4_I(inode)->i_dtime	= (__u32)ktime_get_real_seconds();
+
+	/*
+	 * One subtle ordering requirement: if anything has gone wrong
+	 * (transaction abort, IO errors, whatever), then we can still
+	 * do these next steps (the fs will already have been marked as
+	 * having errors), but we can't free the inode if the mark_dirty
+	 * fails.
+	 */
+	if (ext4_mark_inode_dirty(handle, inode))
+		/* If that failed, just do the required in-core inode clear. */
+		ext4_clear_inode(inode);
+	else
+		ext4_free_inode(handle, inode);
+	ext4_journal_stop(handle);
+	sb_end_intwrite(inode->i_sb);
+	ext4_xattr_inode_array_free(ea_inode_array);
+	return;
+no_delete:
+	ext4_clear_inode(inode);	/* We must guarantee clearing of inode... */
+}
+
 
 #ifdef CONFIG_QUOTA
 qsize_t *ext4_get_reserved_space(struct inode *inode)
@@ -675,11 +843,6 @@ found:
 				retval = ret;
 				goto out_sem;
 			}
-		}
-		else if (IS_DAX(inode)){
-			/* Modified for counting append block calls
-			 * */
-			
 		}
 
 		/*
@@ -4253,6 +4416,108 @@ out_trace:
 	return err;
 }
 
+int ext4_truncate_zero(struct inode *inode)
+{
+	struct ext4_inode_info *ei = EXT4_I(inode);
+	unsigned int credits;
+	int err = 0, err2;
+	handle_t *handle;
+	struct address_space *mapping = inode->i_mapping;
+
+	/*
+	 * There is a possibility that we're either freeing the inode
+	 * or it's a completely new inode. In those cases we might not
+	 * have i_mutex locked because it's not necessary.
+	 */
+	if (!(inode->i_state & (I_NEW|I_FREEING)))
+		WARN_ON(!inode_is_locked(inode));
+	trace_ext4_truncate_enter(inode);
+
+	if (!ext4_can_truncate(inode))
+		goto out_trace;
+
+	if (inode->i_size == 0 && !test_opt(inode->i_sb, NO_AUTO_DA_ALLOC))
+		ext4_set_inode_state(inode, EXT4_STATE_DA_ALLOC_CLOSE);
+
+	if (ext4_has_inline_data(inode)) {
+		int has_inline = 1;
+
+		err = ext4_inline_data_truncate(inode, &has_inline);
+		if (err || has_inline)
+			goto out_trace;
+	}
+
+	/* If we zero-out tail of the page, we have to create jinode for jbd2 */
+	if (inode->i_size & (inode->i_sb->s_blocksize - 1)) {
+		if (ext4_inode_attach_jinode(inode) < 0)
+			goto out_trace;
+	}
+
+	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+		credits = ext4_writepage_trans_blocks(inode);
+	else
+		credits = ext4_blocks_for_truncate(inode);
+
+	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE, credits);
+	if (IS_ERR(handle)) {
+		err = PTR_ERR(handle);
+		goto out_trace;
+	}
+
+	if (inode->i_size & (inode->i_sb->s_blocksize - 1))
+		ext4_block_truncate_page(handle, mapping, inode->i_size);
+
+	/*
+	 * We add the inode to the orphan list, so that if this
+	 * truncate spans multiple transactions, and we crash, we will
+	 * resume the truncate when the filesystem recovers.  It also
+	 * marks the inode dirty, to catch the new size.
+	 *
+	 * Implication: the file must always be in a sane, consistent
+	 * truncatable state while each transaction commits.
+	 */
+	err = ext4_orphan_add(handle, inode);
+	if (err)
+		goto out_stop;
+
+	down_write(&EXT4_I(inode)->i_data_sem);
+
+	ext4_discard_preallocations(inode, 0);
+
+	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+		err = ext4_ext_truncate_zero(handle, inode);
+	else
+		ext4_ind_truncate(handle, inode);
+
+	up_write(&ei->i_data_sem);
+	if (err)
+		goto out_stop;
+
+	if (IS_SYNC(inode))
+		ext4_handle_sync(handle);
+
+out_stop:
+	/*
+	 * If this was a simple ftruncate() and the file will remain alive,
+	 * then we need to clear up the orphan record which we created above.
+	 * However, if this was a real unlink then we were called by
+	 * ext4_evict_inode(), and we allow that function to clean up the
+	 * orphan info for us.
+	 */
+	if (inode->i_nlink)
+		ext4_orphan_del(handle, inode);
+
+	inode->i_mtime = inode->i_ctime = current_time(inode);
+	err2 = ext4_mark_inode_dirty(handle, inode);
+	if (unlikely(err2 && !err))
+		err = err2;
+	ext4_journal_stop(handle);
+
+out_trace:
+	trace_ext4_truncate_exit(inode);
+	return err;
+}
+
 /*
  * ext4_get_inode_loc returns with an extra refcount against the inode's
  * underlying buffer_head on success. If 'in_mem' is true, we have all
@@ -5414,6 +5679,12 @@ int ext4_setattr(struct dentry *dentry, struct iattr *attr)
 		 */
 		if (attr->ia_size <= oldsize) {
 			rc = ext4_truncate(inode);
+		//	if(IS_DAX(inode)) {
+		//		rc = ext4_delay_truncate(inode);
+		//	}
+		//	else {
+		//		rc = ext4_truncate(inode);
+		//	}
 			if (rc)
 				error = rc;
 		}

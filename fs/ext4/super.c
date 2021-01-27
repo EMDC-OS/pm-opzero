@@ -1481,6 +1481,7 @@ static const struct super_operations ext4_sops = {
 	.dirty_inode	= ext4_dirty_inode,
 	.drop_inode	= ext4_drop_inode,
 	.evict_inode	= ext4_evict_inode,
+	.evict_zero_inode	= ext4_evict_zero_inode,
 	.put_super	= ext4_put_super,
 	.sync_fs	= ext4_sync_fs,
 	.freeze_fs	= ext4_freeze,

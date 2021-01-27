@@ -593,6 +593,47 @@ static void evict(struct inode *inode)
 	destroy_inode(inode);
 }
 
+static void evict_zero(struct inode *inode)
+{
+	const struct super_operations *op = inode->i_sb->s_op;
+
+	BUG_ON(!(inode->i_state & I_FREEING));
+	BUG_ON(!list_empty(&inode->i_lru));
+
+	if (!list_empty(&inode->i_io_list))
+		inode_io_list_del(inode);
+
+	inode_sb_list_del(inode);
+
+	/*
+	 * Wait for flusher thread to be done with the inode so that filesystem
+	 * does not start destroying it while writeback is still running. Since
+	 * the inode has I_FREEING set, flusher thread won't start new work on
+	 * the inode.  We just have to wait for running writeback to finish.
+	 */
+	inode_wait_for_writeback(inode);
+
+	if (op->evict_zero_inode) {
+		op->evict_zero_inode(inode);
+	} else {
+		truncate_inode_pages_final(&inode->i_data);
+		clear_inode(inode);
+	}
+	if (S_ISBLK(inode->i_mode) && inode->i_bdev)
+		bd_forget(inode);
+	if (S_ISCHR(inode->i_mode) && inode->i_cdev)
+		cd_forget(inode);
+
+	remove_inode_hash(inode);
+
+	spin_lock(&inode->i_lock);
+	wake_up_bit(&inode->i_state, __I_NEW);
+	BUG_ON(inode->i_state != (I_FREEING | I_CLEAR));
+	spin_unlock(&inode->i_lock);
+
+	destroy_inode(inode);
+}
+
 /*
  * dispose_list - dispose of the contents of a local list
  * @head: the head of the list to free
@@ -1652,6 +1693,48 @@ static void iput_final(struct inode *inode)
 	evict(inode);
 }
 
+static void iput_zero_final(struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+	const struct super_operations *op = inode->i_sb->s_op;
+	unsigned long state;
+	int drop;
+
+	WARN_ON(inode->i_state & I_NEW);
+
+	if (op->drop_inode)
+		drop = op->drop_inode(inode);
+	else
+		drop = generic_drop_inode(inode);
+
+	if (!drop && (sb->s_flags & SB_ACTIVE)) {
+		inode_add_lru(inode);
+		spin_unlock(&inode->i_lock);
+		return;
+	}
+
+	state = inode->i_state;
+	if (!drop) {
+		WRITE_ONCE(inode->i_state, state | I_WILL_FREE);
+		spin_unlock(&inode->i_lock);
+
+		write_inode_now(inode, 1);
+
+		spin_lock(&inode->i_lock);
+		state = inode->i_state;
+		WARN_ON(state & I_NEW);
+		state &= ~I_WILL_FREE;
+	}
+
+	WRITE_ONCE(inode->i_state, state | I_FREEING);
+	if (!list_empty(&inode->i_lru))
+		inode_lru_list_del(inode);
+	spin_unlock(&inode->i_lock);
+
+	evict_zero(inode);
+}
+
+
 /**
  *	iput	- put an inode
  *	@inode: inode to put
@@ -1679,6 +1762,26 @@ retry:
 	}
 }
 EXPORT_SYMBOL(iput);
+
+void iput_zero(struct inode *inode)
+{
+	if (!inode)
+		return;
+	BUG_ON(inode->i_state & I_CLEAR);
+retry:
+	if (atomic_dec_and_lock(&inode->i_count, &inode->i_lock)) {
+		if (inode->i_nlink && (inode->i_state & I_DIRTY_TIME)) {
+			atomic_inc(&inode->i_count);
+			spin_unlock(&inode->i_lock);
+			trace_writeback_lazytime_iput(inode);
+			mark_inode_dirty_sync(inode);
+			goto retry;
+		}
+		iput_zero_final(inode);
+	}
+}
+EXPORT_SYMBOL(iput_zero);
+
 
 #ifdef CONFIG_BLOCK
 /**

@@ -2,16 +2,12 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/kthread.h>
-#include <linux/time.h>
-#include <linux/timer.h>
-#include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
 #include <linux/file.h>
-#include <linux/slab.h>
 #include <linux/export.h>
 #include <asm/spinlock.h>
-
+#include <linux/slab.h>
 static struct task_struct *thread;
 static struct inode ** inode_queue;
 static int queue_index;
@@ -61,7 +57,7 @@ static int kt_print(void)
 			inode_queue[i] = NULL;
 			spin_unlock(&iq_lock);
 
-			iput(inode);
+			iput_zero(inode);
 
 			i++;
 			if( i >= MAX_INODE_QUEUE) i = 0;
@@ -77,6 +73,7 @@ static int __init kt_print_init(void)
 
 	queue_index = 0;
 	inode_queue = kmalloc(sizeof(struct inode*)*8000, GFP_KERNEL);
+	spin_lock_init(&iq_lock);
 	thread = kthread_create((int(*)(void*))kt_print, NULL, "kt_print");
 	if(thread){
 		wake_up_process(thread);
