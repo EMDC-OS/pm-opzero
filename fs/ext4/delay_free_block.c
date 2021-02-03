@@ -14,9 +14,75 @@ static struct list_head block_list;
 static struct kmem_cache* allocator;
 static struct kmem_cache* ext4_free_data_cachep;
 static spinlock_t fb_list_lock; 
+static unsigned long count_free_blocks;
+static int thread_running;
+static int thread_control;
 
+static int kt_free_block(void);
 
-/* ext4_delay_free_block 
+static struct kobject *frblk_kobj;
+
+struct frblk_attr{
+	struct kobj_attribute attr;
+	int value;
+};
+
+static struct frblk_attr frblk_value;
+static struct frblk_attr frblk_notify;
+
+static struct attribute *frblk_attrs[] = {
+	&frblk_value.attr.attr,
+	&frblk_notify.attr.attr,
+	NULL
+};
+
+static struct attribute_group frblk_group = {
+	.attrs = frblk_attrs,
+};
+
+static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
+		char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "Number of free-ed blocks: %lu\nThread running: %d\n", 
+			count_free_blocks, thread_running);
+}
+
+static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
+		const char *buf, size_t len)
+{
+	struct frblk_attr *frblk = container_of(attr, struct frblk_attr, attr);
+	int was_on = 0;
+	if(frblk->value)
+		was_on = 1;
+
+	sscanf(buf, "%d", &frblk->value);
+	sysfs_notify(frblk_kobj, NULL, "frblk_notify");
+	if (frblk->value) {
+		if (was_on == 0) {
+			thread_control = 1;
+			thread = kthread_create((int(*)(void*))kt_free_block, NULL, "kt_free_block");
+			wake_up_process(thread);
+
+		}
+	} 
+	else if (frblk->value == 0) {
+		if (was_on) 
+			thread_control = 0;	
+	}
+	return len;
+}
+
+static struct frblk_attr frblk_value = {
+	.attr = __ATTR(frblk_value, 0644, frblk_show, frblk_store),
+	.value = 0,
+};
+
+static struct frblk_attr frblk_notify = {
+	.attr = __ATTR(frblk_notify, 0644, frblk_show, frblk_store),
+	.value = 0,
+};
+
+/* ext4_delay_free_block
  * Delay the call for ext4_free_block
  * 
  */
@@ -67,6 +133,21 @@ static int free_blocks(handle_t *handle, struct free_block_t *entry)
 	int ret;
 
 do_more:
+	/* Modified for zeroout data blocks while trucate for dax
+	 * */
+	if (IS_DAX(inode)) {
+		/* use iomap_zero_range need to find from and length */
+		struct iomap dax_iomap, srcmap;
+		loff_t written;
+		dax_iomap.addr = block << inode->i_blkbits;
+		dax_iomap.offset = 0;
+		dax_iomap.bdev = inode -> i_sb -> s_bdev;
+		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
+		srcmap.type = 2;
+
+		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
+				NULL, &dax_iomap, &srcmap);
+	}
 	overflow = 0;
 	ext4_get_group_no_and_offset(sb, block, &block_group,
 			&bit);
@@ -135,21 +216,6 @@ do_more:
 	if (err)
 		goto error_return;
 
-	/* Modified for zeroout data blocks while trucate for dax
-	 * */
-	if (IS_DAX(inode)) {
-		/* use iomap_zero_range need to find from and length */
-		struct iomap dax_iomap, srcmap;
-		loff_t written;
-		dax_iomap.addr = block << inode->i_blkbits;
-		dax_iomap.offset = 0;
-		dax_iomap.bdev = inode -> i_sb -> s_bdev;
-		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
-		srcmap.type = 2;
-
-		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
-				NULL, &dax_iomap, &srcmap);
-	}
 
 	/*
 	 * We need to make sure we don't reuse the freed block until after the
@@ -247,13 +313,13 @@ error_return:
 
 static int kt_free_block(void)
 {
-	while(!kthread_should_stop()){
+	while(thread_control) {
 		/* Do rest of the free blocks */			
 		struct free_block_t *entry;
 		int err;
 		unsigned int credits;
 		handle_t *handle;
-
+		thread_running = 1;
 		spin_lock(&fb_list_lock);
 		while (!list_empty(&block_list)) {
 			spin_unlock(&fb_list_lock);
@@ -287,20 +353,27 @@ static int kt_free_block(void)
 			spin_lock(&fb_list_lock);
 			list_del(&entry -> ls);
 			spin_unlock(&fb_list_lock);
+
 			kmem_cache_free(allocator, entry);
+			count_free_blocks++;
 
 			/* This lock is for loop condition check */
 			spin_lock(&fb_list_lock);
 		}
 		spin_unlock(&fb_list_lock);
-		ssleep(1);
+		msleep(100);
 	}
 
+	thread_running = 0;
 	return 0;
 }
 
 static int __init kt_free_block_init(void) 
 {
+	int ret = 0;
+	count_free_blocks = 0;
+	thread_running = 0;
+	thread_control = 0;
 	spin_lock_init(&fb_list_lock);
 	INIT_LIST_HEAD(&block_list);
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,
@@ -311,10 +384,15 @@ static int __init kt_free_block_init(void)
 		printk(KERN_ERR "Kmem_cache create failed!!!!\n");
 		return -1;
 	}
-	thread = kthread_create((int(*)(void*))kt_free_block, NULL, "kt_free_block");
-	if(thread){
-		wake_up_process(thread);
+	frblk_kobj = kobject_create_and_add("free_block", NULL);
+	ret = sysfs_create_group(frblk_kobj, &frblk_group);
+	if(ret) {
+		printk("%s: sysfs_create_group() failed. ret=%d\n", __func__,
+				ret);
 	}
+	//	if(thread){
+	//		wake_up_process(thread);
+	//	}
 
 	return 1;
 }
