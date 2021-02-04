@@ -5497,6 +5497,25 @@ do_more:
 		goto error_return;
 	}
 
+	/* 
+	 * Modified for zeroout data blocks while trucate for dax
+	 * Since zeroing is done on the data blocks, there is no need for
+	 * journaling. Crash consistency will be still held through fsck.
+	 */
+//	if (IS_DAX(inode)) {
+//		/* use iomap_zero_range need to find from and length */
+//		struct iomap dax_iomap, srcmap;
+//		loff_t written;
+//		dax_iomap.addr = block << inode->i_blkbits;
+//		dax_iomap.offset = 0;
+//		dax_iomap.bdev = inode -> i_sb -> s_bdev;
+//		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
+//		srcmap.type = 2;
+//
+//		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
+//			NULL, &dax_iomap, &srcmap);
+//	}
+	
 	BUFFER_TRACE(bitmap_bh, "getting write access");
 	err = ext4_journal_get_write_access(handle, bitmap_bh);
 	if (err)
@@ -5525,23 +5544,6 @@ do_more:
 				     GFP_NOFS|__GFP_NOFAIL);
 	if (err)
 		goto error_return;
-
-	/* Modified for zeroout data blocks while trucate for dax
-	 * */
-	if(IS_DAX(inode))
-	{
-		/* use iomap_zero_range need to find from and length */
-		struct iomap dax_iomap, srcmap;
-		loff_t written;
-		dax_iomap.addr = block << inode->i_blkbits;
-		dax_iomap.offset = 0;
-		dax_iomap.bdev = inode -> i_sb -> s_bdev;
-		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
-		srcmap.type = 2;
-
-		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
-			NULL, &dax_iomap, &srcmap);
-	}
 
 	/*
 	 * We need to make sure we don't reuse the freed block until after the

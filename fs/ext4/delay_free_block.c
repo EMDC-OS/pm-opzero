@@ -113,7 +113,7 @@ EXPORT_SYMBOL(ext4_delay_free_block);
  * Need to clear the block bitmap, zeroout the blocks we
  * have, and change the associated group descriptor
  */
-static int free_blocks(handle_t *handle, struct free_block_t *entry)
+static int free_blocks(struct free_block_t *entry)
 {
 	struct inode *inode = entry -> inode;
 	ext4_fsblk_t block = entry -> block;
@@ -131,23 +131,9 @@ static int free_blocks(handle_t *handle, struct free_block_t *entry)
 	unsigned int count_clusters;
 	int err = 0;
 	int ret;
-
+	unsigned int credits;
+	handle_t *handle = NULL;
 do_more:
-	/* Modified for zeroout data blocks while trucate for dax
-	 * */
-	if (IS_DAX(inode)) {
-		/* use iomap_zero_range need to find from and length */
-		struct iomap dax_iomap, srcmap;
-		loff_t written;
-		dax_iomap.addr = block << inode->i_blkbits;
-		dax_iomap.offset = 0;
-		dax_iomap.bdev = inode -> i_sb -> s_bdev;
-		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
-		srcmap.type = 2;
-
-		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
-				NULL, &dax_iomap, &srcmap);
-	}
 	overflow = 0;
 	ext4_get_group_no_and_offset(sb, block, &block_group,
 			&bit);
@@ -188,6 +174,30 @@ do_more:
 		/* err = 0. ext4_std_error should be a no op */
 		goto error_return;
 	}
+
+	/* Modified for zeroout data blocks while trucate for dax
+	 * */
+	if (IS_DAX(inode)) {
+		/* use iomap_zero_range need to find from and length */
+		struct iomap dax_iomap, srcmap;
+		loff_t written;
+		dax_iomap.addr = block << inode->i_blkbits;
+		dax_iomap.offset = 0;
+		dax_iomap.bdev = inode -> i_sb -> s_bdev;
+		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
+		srcmap.type = 2;
+
+		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
+				NULL, &dax_iomap, &srcmap);
+	}
+
+	/* New handle for journaling
+	 * */
+	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+		credits = ext4_writepage_trans_blocks(inode);
+	else
+		credits = ext4_blocks_for_truncate(inode);
+	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE, credits);
 
 	BUFFER_TRACE(bitmap_bh, "getting write access");
 	err = ext4_journal_get_write_access(handle, bitmap_bh);
@@ -299,6 +309,8 @@ do_more:
 	if (!err)
 		err = ret;
 
+	ext4_journal_stop(handle);
+
 	if (overflow && !err) {
 		block += count;
 		count = overflow;
@@ -317,14 +329,11 @@ static int kt_free_block(void)
 		/* Do rest of the free blocks */			
 		struct free_block_t *entry;
 		int err;
-		unsigned int credits;
-		handle_t *handle;
 		thread_running = 1;
 		spin_lock(&fb_list_lock);
 		while (!list_empty(&block_list)) {
 			spin_unlock(&fb_list_lock);
 			err = 0;
-			handle = NULL;
 			spin_lock(&fb_list_lock);
 			entry = list_first_entry(&block_list,
 					struct free_block_t, ls);
@@ -338,14 +347,7 @@ static int kt_free_block(void)
 				continue;
 			}
 
-			if (ext4_test_inode_flag(entry -> inode, EXT4_INODE_EXTENTS))
-				credits = ext4_writepage_trans_blocks(entry -> inode);
-			else
-				credits = ext4_blocks_for_truncate(entry -> inode);
-
-			handle = ext4_journal_start(entry -> inode, EXT4_HT_TRUNCATE, credits);
-			err = free_blocks(handle, entry);
-			ext4_journal_stop(handle);
+			err = free_blocks(entry);
 			if (err) {
 				printk(KERN_ERR "Free blocks error!!!!\n");
 			}

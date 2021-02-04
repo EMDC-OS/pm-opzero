@@ -394,7 +394,7 @@ static int ext4_valid_extent_entries(struct inode *inode,
 	return 1;
 }
 
-static int __ext4_ext_check(const char *function, unsigned int line,
+int __ext4_ext_check(const char *function, unsigned int line,
 			    struct inode *inode, struct ext4_extent_header *eh,
 			    int depth, ext4_fsblk_t pblk)
 {
@@ -450,6 +450,7 @@ corrupted:
 			     max, le16_to_cpu(eh->eh_depth), depth);
 	return err;
 }
+EXPORT_SYMBOL(__ext4_ext_check);
 
 #define ext4_ext_check(inode, eh, depth, pblk)			\
 	__ext4_ext_check(__func__, __LINE__, (inode), (eh), (depth), (pblk))
@@ -483,7 +484,7 @@ static void ext4_cache_extents(struct inode *inode,
 	}
 }
 
-static struct buffer_head *
+struct buffer_head *
 __read_extent_tree_block(const char *function, unsigned int line,
 			 struct inode *inode, ext4_fsblk_t pblk, int depth,
 			 int flags)
@@ -525,7 +526,7 @@ errout:
 	return ERR_PTR(err);
 
 }
-
+EXPORT_SYMBOL(__read_extent_tree_block);
 #define read_extent_tree_block(inode, pblk, depth, flags)		\
 	__read_extent_tree_block(__func__, __LINE__, (inode), (pblk),   \
 				 (depth), (flags))
@@ -3121,7 +3122,7 @@ out:
  * ext4_ext_more_to_rm:
  * returns 1 if current index has to be freed (even partial)
  */
-static int
+int
 ext4_ext_more_to_rm(struct ext4_ext_path *path)
 {
 	BUG_ON(path->p_idx == NULL);
@@ -3137,6 +3138,7 @@ ext4_ext_more_to_rm(struct ext4_ext_path *path)
 		return 0;
 	return 1;
 }
+EXPORT_SYMBOL(ext4_ext_more_to_rm);
 
 int ext4_ext_remove_space(struct inode *inode, ext4_lblk_t start,
 			  ext4_lblk_t end)
