@@ -3856,7 +3856,6 @@ EXPORT_SYMBOL(vfs_unlink);
  * writeout happening, and we don't want to prevent access to the directory
  * while waiting on the I/O.
  */
-void delay_iput(struct inode *inode);
 long do_unlinkat(int dfd, struct filename *name)
 {
 	int error;
@@ -3903,7 +3902,7 @@ exit2:
 		if (!IS_DAX(inode))
 			iput(inode);	/* truncate the inode here */
 		else {
-			delay_iput(inode);
+			iput_zero(inode);
 		}
 		inode = NULL;
 	}

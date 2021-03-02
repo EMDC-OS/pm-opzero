@@ -5256,20 +5256,20 @@ do_more:
 
 	/* Modified for zeroout data blocks while trucate for dax
 	 * */
-	if(IS_DAX(inode))
-	{
-		/* use iomap_zero_range need to find from and length */
-		struct iomap dax_iomap, srcmap;
-		loff_t written;
-		dax_iomap.addr = block << inode->i_blkbits;
-		dax_iomap.offset = 0;
-		dax_iomap.bdev = inode -> i_sb -> s_bdev;
-		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
-		srcmap.type = 2;
-
-		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
-			NULL, &dax_iomap, &srcmap);
-	}
+//	if(IS_DAX(inode))
+//	{
+//		/* use iomap_zero_range need to find from and length */
+//		struct iomap dax_iomap, srcmap;
+//		loff_t written;
+//		dax_iomap.addr = block << inode->i_blkbits;
+//		dax_iomap.offset = 0;
+//		dax_iomap.bdev = inode -> i_sb -> s_bdev;
+//		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
+//		srcmap.type = 2;
+//
+//		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
+//			NULL, &dax_iomap, &srcmap);
+//	}
 
 	/*
 	 * We need to make sure we don't reuse the freed block until after the
@@ -5452,6 +5452,9 @@ void ext4_free_blocks_zero(handle_t *handle, struct inode *inode,
 			ext4_forget(handle, is_metadata, inode, bh, block + i);
 		}
 	}
+	if (IS_DAX(inode)) {
+		ext4_delay_free_block(inode, block, count, flags);
+	} else {
 
 do_more:
 	overflow = 0;
@@ -5631,6 +5634,7 @@ do_more:
 		count = overflow;
 		put_bh(bitmap_bh);
 		goto do_more;
+	}
 	}
 error_return:
 	brelse(bitmap_bh);

@@ -572,9 +572,9 @@ void ext4_evict_zero_inode(struct inode *inode)
 	 * Zeroout before getting the journal handle so that the zeroing in the
 	 * data blocks does not hold the journal transaction
 	 */
-	err = zeroout(inode);
-	if(err) 
-		printk(KERN_ERR "%s: Zeroing out has error", __func__);
+//	err = zeroout(inode);
+//	if(err) 
+//		printk(KERN_ERR "%s: Zeroing out has error", __func__);
 
 	dquot_initialize(inode);
 
