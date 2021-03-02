@@ -15,6 +15,7 @@ static struct kmem_cache* allocator;
 static struct kmem_cache* ext4_free_data_cachep;
 static spinlock_t fb_list_lock; 
 static unsigned long count_free_blocks;
+static unsigned long num_free_blocks;
 static int thread_running;
 static int thread_control;
 
@@ -43,8 +44,8 @@ static struct attribute_group frblk_group = {
 static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 		char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "Number of free-ed blocks: %lu\nThread running: %d\n", 
-			count_free_blocks, thread_running);
+	return scnprintf(buf, PAGE_SIZE, "Number of called blocks: %lu\nNumber of free blocks: %lu\nThread running: %d\n", 
+			count_free_blocks, num_free_blocks, thread_running);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -346,7 +347,7 @@ static int kt_free_block(void)
 				spin_lock(&fb_list_lock);
 				continue;
 			}
-
+			num_free_blocks += entry->count;
 			err = free_blocks(entry);
 			if (err) {
 				printk(KERN_ERR "Free blocks error!!!!\n");
@@ -374,6 +375,7 @@ static int __init kt_free_block_init(void)
 {
 	int ret = 0;
 	count_free_blocks = 0;
+	num_free_blocks = 0;
 	thread_running = 0;
 	thread_control = 0;
 	spin_lock_init(&fb_list_lock);

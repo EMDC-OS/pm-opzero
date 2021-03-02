@@ -43,9 +43,6 @@
 #include "internal.h"
 #include "mount.h"
 
-/* Modified header */
-#include "kt_print.h"
-
 /* [Feb-1997 T. Schoebel-Theuer]
  * Fundamental changes in the pathname lookup mechanisms (namei)
  * were necessary because of omirr.  The reason is that omirr needs
@@ -3859,6 +3856,7 @@ EXPORT_SYMBOL(vfs_unlink);
  * writeout happening, and we don't want to prevent access to the directory
  * while waiting on the I/O.
  */
+void delay_iput(struct inode *inode);
 long do_unlinkat(int dfd, struct filename *name)
 {
 	int error;

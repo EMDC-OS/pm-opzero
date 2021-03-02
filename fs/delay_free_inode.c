@@ -120,7 +120,7 @@ static int kt_free_inode(void)
 
 		}
 		spin_unlock(&iq_lock);
-		ssleep(1);
+		msleep(100);
 	}
 	thread_running = 0;
 	return 0;

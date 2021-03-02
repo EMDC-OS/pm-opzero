@@ -5271,7 +5271,6 @@ do_more:
 			NULL, &dax_iomap, &srcmap);
 	}
 
-
 	/*
 	 * We need to make sure we don't reuse the freed block until after the
 	 * transaction is committed. We make an exception if the inode is to be

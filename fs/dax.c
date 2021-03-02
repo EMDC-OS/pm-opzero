@@ -1046,7 +1046,6 @@ int dax_iomap_zero(loff_t pos, unsigned offset, unsigned size,
 	void *kaddr;
 	bool page_aligned = false;
 
-
 	if (IS_ALIGNED(sector << SECTOR_SHIFT, PAGE_SIZE) &&
 	    IS_ALIGNED(size, PAGE_SIZE))
 		page_aligned = true;
