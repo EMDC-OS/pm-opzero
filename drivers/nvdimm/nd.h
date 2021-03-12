@@ -412,4 +412,11 @@ static inline bool is_bad_pmem(struct badblocks *bb, sector_t sector,
 resource_size_t nd_namespace_blk_validate(struct nd_namespace_blk *nsblk);
 const u8 *nd_dev_to_uuid(struct device *dev);
 bool pmem_should_map_pages(struct device *dev);
+enum nd_ioctl_mode {
+	BUS_IOCTL,
+	DIMM_IOCTL,
+};
+
+long dev_nd_ioctl(const char *name, unsigned int cmd, unsigned long arg,
+		enum nd_ioctl_mode mode);
 #endif /* __ND_H__ */

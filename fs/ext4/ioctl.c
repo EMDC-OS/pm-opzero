@@ -815,7 +815,6 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	unsigned int flags;
 
 	ext4_debug("cmd = %u, arg = %lu\n", cmd, arg);
-
 	switch (cmd) {
 	case FS_IOC_GETFSMAP:
 		return ext4_ioc_getfsmap(sb, (void __user *)arg);

@@ -1100,6 +1100,8 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 			copy = 0;
 		if (copy && copy_from_user(&in_env[in_len], p + in_len, copy)) {
 			rc = -EFAULT;
+			printk(KERN_ERR "ERROR HERE1: copy(%u), in_len(%u) "
+			"in_size(%u)\n", copy, in_len, in_size);
 			goto out;
 		}
 		in_len += in_size;
@@ -1127,6 +1129,7 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 		if (out_size == UINT_MAX) {
 			dev_dbg(dev, "%s unknown output size cmd: %s field: %d\n",
 					dimm_name, cmd_name, i);
+			printk(KERN_ERR "ERROR HERE2\n");
 			rc = -EFAULT;
 			goto out;
 		}
@@ -1136,6 +1139,7 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 			copy = 0;
 		if (copy && copy_from_user(&out_env[out_len],
 					p + in_len + out_len, copy)) {
+			printk(KERN_ERR "ERROR HERE3\n");
 			rc = -EFAULT;
 			goto out;
 		}
@@ -1157,6 +1161,7 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 	}
 
 	if (copy_from_user(buf, p, buf_len)) {
+			printk(KERN_ERR "ERROR HERE4\n");
 		rc = -EFAULT;
 		goto out;
 	}
@@ -1178,8 +1183,10 @@ static int __nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
 				clear_err->cleared);
 	}
 
-	if (copy_to_user(p, buf, buf_len))
+	if (copy_to_user(p, buf, buf_len)) {
+			printk(KERN_ERR "ERROR HERE5\n");
 		rc = -EFAULT;
+	}
 
 out_unlock:
 	nvdimm_bus_unlock(dev);
@@ -1190,11 +1197,201 @@ out:
 	vfree(buf);
 	return rc;
 }
+int my_memcpy(void *dest, const void *src, size_t len) 
+{
+	memcpy(dest,src,len);
+	return 0;
+}
+static int dev__nd_ioctl(struct nvdimm_bus *nvdimm_bus, struct nvdimm *nvdimm,
+		int read_only, unsigned int ioctl_cmd, unsigned long arg)
+{
+	struct nvdimm_bus_descriptor *nd_desc = nvdimm_bus->nd_desc;
+	const struct nd_cmd_desc *desc = NULL;
+	unsigned int cmd = _IOC_NR(ioctl_cmd);
+	struct device *dev = &nvdimm_bus->dev;
+	void __user *p = (void __user *) arg;
+	char *out_env = NULL, *in_env = NULL;
+	const char *cmd_name, *dimm_name;
+	u32 in_len = 0, out_len = 0;
+	unsigned int func = cmd;
+	unsigned long cmd_mask;
+	struct nd_cmd_pkg pkg;
+	int rc, i, cmd_rc;
+	void *buf = NULL;
+	u64 buf_len = 0;
 
-enum nd_ioctl_mode {
-	BUS_IOCTL,
-	DIMM_IOCTL,
-};
+	if (nvdimm) {
+		desc = nd_cmd_dimm_desc(cmd);
+		cmd_name = nvdimm_cmd_name(cmd);
+		cmd_mask = nvdimm->cmd_mask;
+		dimm_name = dev_name(&nvdimm->dev);
+	} else {
+		desc = nd_cmd_bus_desc(cmd);
+		cmd_name = nvdimm_bus_cmd_name(cmd);
+		cmd_mask = nd_desc->cmd_mask;
+		dimm_name = "bus";
+	}
+
+	/* Validate command family support against bus declared support */
+	if (cmd == ND_CMD_CALL) {
+		unsigned long *mask;
+
+		if (copy_from_user(&pkg, p, sizeof(pkg)))
+			return -EFAULT;
+
+		if (nvdimm) {
+			if (pkg.nd_family > NVDIMM_FAMILY_MAX)
+				return -EINVAL;
+			mask = &nd_desc->dimm_family_mask;
+		} else {
+			if (pkg.nd_family > NVDIMM_BUS_FAMILY_MAX)
+				return -EINVAL;
+			mask = &nd_desc->bus_family_mask;
+		}
+
+		if (!test_bit(pkg.nd_family, mask))
+			return -EINVAL;
+	}
+
+	if (!desc ||
+	    (desc->out_num + desc->in_num == 0) ||
+	    cmd > ND_CMD_CALL ||
+	    !test_bit(cmd, &cmd_mask))
+		return -ENOTTY;
+
+	/* fail write commands (when read-only) */
+	if (read_only)
+		switch (cmd) {
+		case ND_CMD_VENDOR:
+		case ND_CMD_SET_CONFIG_DATA:
+		case ND_CMD_ARS_START:
+		case ND_CMD_CLEAR_ERROR:
+		case ND_CMD_CALL:
+			dev_dbg(dev, "'%s' command while read-only.\n",
+					nvdimm ? nvdimm_cmd_name(cmd)
+					: nvdimm_bus_cmd_name(cmd));
+			return -EPERM;
+		default:
+			break;
+		}
+
+	/* process an input envelope */
+	in_env = kzalloc(ND_CMD_MAX_ENVELOPE, GFP_KERNEL);
+	if (!in_env)
+		return -ENOMEM;
+	for (i = 0; i < desc->in_num; i++) {
+		u32 in_size, copy;
+
+		in_size = nd_cmd_in_size(nvdimm, cmd, desc, i, in_env);
+		if (in_size == UINT_MAX) {
+			dev_err(dev, "%s:%s unknown input size cmd: %s field: %d\n",
+					__func__, dimm_name, cmd_name, i);
+			rc = -ENXIO;
+			goto out;
+		}
+		if (in_len < ND_CMD_MAX_ENVELOPE)
+			copy = min_t(u32, ND_CMD_MAX_ENVELOPE - in_len, in_size);
+		else
+			copy = 0;
+		if (copy && my_memcpy(&in_env[in_len], p + in_len, copy)) {
+			rc = -EFAULT;
+			printk(KERN_ERR "ERROR HERE1: copy(%u), in_len(%u) "
+			"in_size(%u)\n", copy, in_len, in_size);
+			goto out;
+		}
+		in_len += in_size;
+	}
+
+	if (cmd == ND_CMD_CALL) {
+		func = pkg.nd_command;
+		dev_dbg(dev, "%s, idx: %llu, in: %u, out: %u, len %llu\n",
+				dimm_name, pkg.nd_command,
+				in_len, out_len, buf_len);
+	}
+
+	/* process an output envelope */
+	out_env = kzalloc(ND_CMD_MAX_ENVELOPE, GFP_KERNEL);
+	if (!out_env) {
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	for (i = 0; i < desc->out_num; i++) {
+		u32 out_size = nd_cmd_out_size(nvdimm, cmd, desc, i,
+				(u32 *) in_env, (u32 *) out_env, 0);
+		u32 copy;
+
+		if (out_size == UINT_MAX) {
+			dev_dbg(dev, "%s unknown output size cmd: %s field: %d\n",
+					dimm_name, cmd_name, i);
+			printk(KERN_ERR "ERROR HERE2\n");
+			rc = -EFAULT;
+			goto out;
+		}
+		if (out_len < ND_CMD_MAX_ENVELOPE)
+			copy = min_t(u32, ND_CMD_MAX_ENVELOPE - out_len, out_size);
+		else
+			copy = 0;
+		if (copy && my_memcpy(&out_env[out_len],
+					p + in_len + out_len, copy)) {
+			printk(KERN_ERR "ERROR HERE3\n");
+			rc = -EFAULT;
+			goto out;
+		}
+		out_len += out_size;
+	}
+
+	buf_len = (u64) out_len + (u64) in_len;
+	if (buf_len > ND_IOCTL_MAX_BUFLEN) {
+		dev_dbg(dev, "%s cmd: %s buf_len: %llu > %d\n", dimm_name,
+				cmd_name, buf_len, ND_IOCTL_MAX_BUFLEN);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	buf = vmalloc(buf_len);
+	if (!buf) {
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	if (my_memcpy(buf, p, buf_len)) {
+			printk(KERN_ERR "ERROR HERE4\n");
+		rc = -EFAULT;
+		goto out;
+	}
+
+	nd_device_lock(dev);
+	nvdimm_bus_lock(dev);
+	rc = nd_cmd_clear_to_send(nvdimm_bus, nvdimm, func, buf);
+	if (rc)
+		goto out_unlock;
+
+	rc = nd_desc->ndctl(nd_desc, nvdimm, cmd, buf, buf_len, &cmd_rc);
+	if (rc < 0)
+		goto out_unlock;
+
+	if (!nvdimm && cmd == ND_CMD_CLEAR_ERROR && cmd_rc >= 0) {
+		struct nd_cmd_clear_error *clear_err = buf;
+
+		nvdimm_account_cleared_poison(nvdimm_bus, clear_err->address,
+				clear_err->cleared);
+	}
+
+	if (my_memcpy(p, buf, buf_len)) {
+			printk(KERN_ERR "ERROR HERE5\n");
+		rc = -EFAULT;
+	}
+
+out_unlock:
+	nvdimm_bus_unlock(dev);
+	nd_device_unlock(dev);
+out:
+	kfree(in_env);
+	kfree(out_env);
+	vfree(buf);
+	return rc;
+}
 
 static int match_dimm(struct device *dev, void *data)
 {
@@ -1254,6 +1451,49 @@ static long nd_ioctl(struct file *file, unsigned int cmd, unsigned long arg,
 
 	return rc;
 }
+
+long dev_nd_ioctl(const char *name, unsigned int cmd, unsigned long arg,
+		enum nd_ioctl_mode mode)
+{
+	struct nvdimm_bus *nvdimm_bus, *found = NULL;
+	struct nvdimm *nvdimm = NULL;
+	int rc, ro;
+
+	ro = 0;
+	mutex_lock(&nvdimm_bus_list_mutex);
+	list_for_each_entry(nvdimm_bus, &nvdimm_bus_list, list) {
+		if (mode == DIMM_IOCTL) {
+			struct device *dev;
+
+			dev = device_find_child_by_name(&nvdimm_bus->dev,
+					name);
+			if (!dev)
+				continue;
+			nvdimm = to_nvdimm(dev);
+			found = nvdimm_bus;
+		}
+
+		if (found) {
+			atomic_inc(&nvdimm_bus->ioctl_active);
+			break;
+		}
+	}
+	mutex_unlock(&nvdimm_bus_list_mutex);
+
+	if (!found)
+		return -ENXIO;
+
+	nvdimm_bus = found;
+	rc = dev__nd_ioctl(nvdimm_bus, nvdimm, ro, cmd, arg);
+
+	if (nvdimm)
+		put_device(&nvdimm->dev);
+	if (atomic_dec_and_test(&nvdimm_bus->ioctl_active))
+		wake_up(&nvdimm_bus->wait);
+
+	return rc;
+}
+EXPORT_SYMBOL_GPL(dev_nd_ioctl);
 
 static long bus_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {

@@ -9,16 +9,22 @@
 
 #include "delay_free_block_test.h"
 
+
 static struct task_struct *thread;
 static struct list_head block_list;
 static struct kmem_cache* allocator;
+static struct kmem_cache* ndctl_alloc;
 static struct kmem_cache* ext4_free_data_cachep;
 static spinlock_t fb_list_lock; 
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
 static int thread_running;
 static int thread_control;
-
+static struct ndctl_cmd *pcmd;
+static meminfo output;
+static input_info input;
+static struct nd_cmd_vendor_tail *tail;
+static int rc;
 static int kt_free_block(void);
 
 static struct kobject *frblk_kobj;
@@ -44,8 +50,18 @@ static struct attribute_group frblk_group = {
 static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 		char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "Number of called blocks: %lu\nNumber of free blocks: %lu\nThread running: %d\n", 
-			count_free_blocks, num_free_blocks, thread_running);
+	return scnprintf(buf, PAGE_SIZE, "Number of called blocks: %lu\n" 
+					"Number of free blocks: %lu\n"
+					"Thread running: %d\n"
+					"MediaReads_0: %llx\n"
+					"MediaReads_1: %llx\n"
+					"MediaWrites_0: %llx\n"
+					"MediaWrites_1: %llx\n"
+					"RC: %d\n", 
+			count_free_blocks, num_free_blocks, thread_running,
+			output.MediaReads.Uint64, output.MediaReads.Uint64_1,
+			output.MediaWrites.Uint64, output.MediaWrites.Uint64_1,
+			rc);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -58,7 +74,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	sscanf(buf, "%d", &frblk->value);
 	sysfs_notify(frblk_kobj, NULL, "frblk_notify");
-	if (frblk->value) {
+	if (frblk->value == 1) {
 		if (was_on == 0) {
 			thread_control = 1;
 			thread = kthread_create((int(*)(void*))kt_free_block, NULL, "kt_free_block");
@@ -69,6 +85,12 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 	else if (frblk->value == 0) {
 		if (was_on) 
 			thread_control = 0;	
+	}
+	else if (frblk->value == 2) {
+		frblk->value = 0;
+		rc = dev_nd_ioctl("nmem0", ND_IOCTL_VENDOR, (unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
+		memcpy(&output, tail->out_buf, sizeof(meminfo));
+
 	}
 	return len;
 }
@@ -374,10 +396,17 @@ static int kt_free_block(void)
 static int __init kt_free_block_init(void) 
 {
 	int ret = 0;
+	size_t size;
+	rc = 0;
 	count_free_blocks = 0;
 	num_free_blocks = 0;
 	thread_running = 0;
 	thread_control = 0;
+	input.MemoryPage = 0x0;
+	output.MediaReads.Uint64 = 0;
+	output.MediaReads.Uint64_1 = 0;
+	output.MediaWrites.Uint64 = 0;
+	output.MediaWrites.Uint64_1 = 0;
 	spin_lock_init(&fb_list_lock);
 	INIT_LIST_HEAD(&block_list);
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,
@@ -397,7 +426,24 @@ static int __init kt_free_block_init(void)
 	//	if(thread){
 	//		wake_up_process(thread);
 	//	}
-
+	
+	/* TODO: Try ioctl to read MediaReads, MediaWrites of PM device
+	 * Initial values
+	*/
+	size = sizeof(*pcmd) + sizeof(struct nd_cmd_vendor_hdr) 
+		+ sizeof(struct nd_cmd_vendor_tail) + 128 + 128;
+	ndctl_alloc = kmem_cache_create("delay_free_block", size, 0, 0, NULL);
+	pcmd = kmem_cache_alloc(ndctl_alloc, GFP_KERNEL);
+	pcmd->type = ND_CMD_VENDOR;
+	pcmd->size = size;
+	pcmd->status = 1;
+	pcmd->vendor->opcode = (uint32_t) (0x03 << 8 | 0x08);
+	pcmd->vendor->in_length = 128;
+	memcpy(pcmd->vendor->in_buf, &input, sizeof(input_info));
+	tail = (struct nd_cmd_vendor_tail *) 
+		(pcmd->cmd_buf + sizeof(struct nd_cmd_vendor_hdr)
+		 + pcmd->vendor->in_length);
+	tail->out_length = (u32) 128;
 	return 1;
 }
 
@@ -407,8 +453,10 @@ static void __exit kt_free_block_cleanup(void)
 	if(kthread_stop(thread)){
 		printk(KERN_ERR "kt_free_block: Thread Stopped!\n");
 	}
+	kmem_cache_free(ndctl_alloc, pcmd);
 	kmem_cache_shrink(ext4_free_data_cachep);
 	kmem_cache_shrink(allocator);
+	kmem_cache_shrink(ndctl_alloc);
 }
 
 
