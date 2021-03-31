@@ -6285,13 +6285,23 @@ static ssize_t ext4_quota_write(struct super_block *sb, int type,
 			(unsigned long long)off, (unsigned long long)len);
 		return -EIO;
 	}
+	if(!IS_DAX(inode)) {
+		do {
+			bh = ext4_bread(handle, inode, blk,
+					EXT4_GET_BLOCKS_CREATE |
+					EXT4_GET_BLOCKS_METADATA_NOFAIL);
+		} while (PTR_ERR(bh) == -ENOSPC &&
+				ext4_should_retry_alloc(inode->i_sb, &retries));
+	} else {
+		do {
+			bh = ext4_bread(handle, inode, blk,
+					EXT4_GET_BLOCKS_CREATE |
+					EXT4_GET_BLOCKS_METADATA_NOFAIL);
+		} while (PTR_ERR(bh) == -ENOSPC &&
+				ext4_should_retry_alloc_dax(inode->i_sb,
+				&retries, 1));
 
-	do {
-		bh = ext4_bread(handle, inode, blk,
-				EXT4_GET_BLOCKS_CREATE |
-				EXT4_GET_BLOCKS_METADATA_NOFAIL);
-	} while (PTR_ERR(bh) == -ENOSPC &&
-		 ext4_should_retry_alloc(inode->i_sb, &retries));
+	}
 	if (IS_ERR(bh))
 		return PTR_ERR(bh);
 	if (!bh)

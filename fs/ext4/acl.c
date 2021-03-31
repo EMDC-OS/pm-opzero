@@ -259,6 +259,11 @@ retry:
 	}
 out_stop:
 	ext4_journal_stop(handle);
+	if(IS_DAX(inode)) {
+		if(error == -ENOSPC && ext4_should_retry_alloc_dax(inode->i_sb,
+			&retries, 1))
+			goto retry;
+	}
 	if (error == -ENOSPC && ext4_should_retry_alloc(inode->i_sb, &retries))
 		goto retry;
 	return error;

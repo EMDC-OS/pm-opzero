@@ -2476,6 +2476,8 @@ extern struct ext4_group_desc * ext4_get_group_desc(struct super_block * sb,
 						    ext4_group_t block_group,
 						    struct buffer_head ** bh);
 extern int ext4_should_retry_alloc(struct super_block *sb, int *retries);
+extern int ext4_should_retry_alloc_dax(struct super_block *sb, int *retries,
+					unsigned int len);
 
 extern struct buffer_head *ext4_read_block_bitmap_nowait(struct super_block *sb,
 						ext4_group_t block_group,

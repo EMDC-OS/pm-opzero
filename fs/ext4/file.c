@@ -704,7 +704,11 @@ retry:
 	result = dax_iomap_fault(vmf, pe_size, &pfn, &error, &ext4_iomap_ops);
 	if (write) {
 		ext4_journal_stop(handle);
-
+		if (IS_DAX(inode)) {
+			if((result & VM_FAULT_ERROR) && error == -ENOSPC &&
+				ext4_should_retry_alloc_dax(sb, &retries, 1))
+				goto retry;
+		}
 		if ((result & VM_FAULT_ERROR) && error == -ENOSPC &&
 		    ext4_should_retry_alloc(sb, &retries))
 			goto retry;

@@ -562,6 +562,8 @@ ext4_read_block_bitmap(struct super_block *sb, ext4_group_t block_group)
  * Check if filesystem has nclusters free & available for allocation.
  * On success return 1, return 0 on failure.
  */
+long get_num_pz_blocks(void);
+int ext4_free_num_blocks(long count);
 static int ext4_has_free_clusters(struct ext4_sb_info *sbi,
 				  s64 nclusters, unsigned int flags)
 {
@@ -606,6 +608,27 @@ static int ext4_has_free_clusters(struct ext4_sb_info *sbi,
 		if (free_clusters >= (nclusters + dirty_clusters))
 			return 1;
 	}
+	
+	/* Check if pre-zero blocks are left
+	 * */
+
+	if( nclusters <= get_num_pz_blocks()) {
+		/* zero out and free those blocks 
+		 * */	
+		//call free blocks for nclusters
+//		int err;
+//		handle_t *handle = ext4_journal_start_sb(sbi->s_sb, EXT4_HT_MAP_BLOCKS,
+//		0);
+//		err = ext4_journal_extend(handle, 2*nclusters, 0);
+//		if(err) {
+//			ext4_journal_restart(handle, 2*nclusters, 0);
+//		}
+		if(ext4_free_num_blocks(nclusters + dirty_clusters)) {
+//			ext4_journal_stop(handle);
+			return 1;
+		}
+//		ext4_journal_stop(handle);
+	}
 
 	return 0;
 }
@@ -641,6 +664,27 @@ int ext4_should_retry_alloc(struct super_block *sb, int *retries)
 	if (EXT4_SB(sb)->s_mb_free_pending == 0)
 		return 0;
 
+	jbd_debug(1, "%s: retrying operation after ENOSPC\n", sb->s_id);
+	jbd2_journal_force_commit_nested(EXT4_SB(sb)->s_journal);
+	return 1;
+}
+
+int ext4_should_retry_alloc_dax(struct super_block *sb, int *retries, unsigned int len)
+{
+	if(len <= get_num_pz_blocks()) {
+		if(ext4_free_num_blocks(len)) 
+		goto out;	
+	}
+
+	if (!ext4_has_free_clusters(EXT4_SB(sb), 1, 0) ||
+	    (*retries)++ > 1 ||
+	    !EXT4_SB(sb)->s_journal)
+		return 0;
+
+	smp_mb();
+	if (EXT4_SB(sb)->s_mb_free_pending == 0)
+		return 0;
+out:
 	jbd_debug(1, "%s: retrying operation after ENOSPC\n", sb->s_id);
 	jbd2_journal_force_commit_nested(EXT4_SB(sb)->s_journal);
 	return 1;

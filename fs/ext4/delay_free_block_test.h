@@ -18,6 +18,9 @@
 #include <linux/iomap.h>
 #include <linux/quotaops.h>
 #include <linux/buffer_head.h>
+#include <linux/mm.h>
+#include <linux/iomap.h>
+#include <linux/dax.h>
 #include "../../drivers/nvdimm/nd.h"
 #include "ext4.h"
 #include "ext4_jbd2.h"
@@ -65,25 +68,24 @@ typedef struct {
 	};
 } cmd;
 
-struct ndctl_cmd {                                                                                                                      
-	int refcount;                                                                                                                   
-	int type;                                                                                                                       
-	int size;                                                                                                                       
-	int status;                                                                                                                     
-	union {                                                                                                                         
-		struct nd_cmd_get_config_size get_size[0];                                                                              
-		struct nd_cmd_get_config_data_hdr get_data[0];                                                                          
-		struct nd_cmd_set_config_hdr set_data[0];                                                                               
-		struct nd_cmd_vendor_hdr vendor[0];                                                                                     
-		char cmd_buf[0];                                                                                                        
-	};                                                                                                                              
+struct ndctl_cmd { 
+	int refcount;
+	int type;
+	int size;
+	int status;
+	union {
+		struct nd_cmd_get_config_size get_size[0];
+		struct nd_cmd_get_config_data_hdr get_data[0];
+		struct nd_cmd_set_config_hdr set_data[0];
+		struct nd_cmd_vendor_hdr vendor[0];
+		char cmd_buf[0];
+	};
 };
 
 struct free_block_t {
-	struct inode * inode;
+	struct inode *inode;
 	ext4_fsblk_t block;
 	int flag;
 	unsigned long count; 
-
 	struct list_head ls;
 };

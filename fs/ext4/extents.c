@@ -5132,6 +5132,14 @@ retry:
 		if (unlikely(ret2))
 			break;
 	}
+	if(IS_DAX(inode)) {
+		if (ret == -ENOSPC &&
+				ext4_should_retry_alloc_dax(inode->i_sb,
+				&retries, len)) {
+			ret = 0;
+			goto retry;
+		}
+	}
 	if (ret == -ENOSPC &&
 			ext4_should_retry_alloc(inode->i_sb, &retries)) {
 		ret = 0;

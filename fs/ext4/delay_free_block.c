@@ -1,8 +1,4 @@
 /*
- * TODO: make a linked list queue for free blocks list
- * This requires struct free_block_node which includes inode, block, flag and
- * potiner to the next node
- *
  * Delay free block is mainly for zerooutting the blocks at the background. So
  * that the allocation does not require zeroing. 
  * */
@@ -11,21 +7,30 @@
 
 
 static struct task_struct *thread;
+static struct task_struct *thread_monitoring;
 static struct list_head block_list;
 static struct kmem_cache* allocator;
 static struct kmem_cache* ndctl_alloc;
 static struct kmem_cache* ext4_free_data_cachep;
 static spinlock_t fb_list_lock; 
+static spinlock_t tb_lock; 
+static spinlock_t list_lock; 
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
-static int thread_running;
+static unsigned long num_freeing_blocks;
+static long total_blocks;
+static unsigned long read_bytes, write_bytes;
 static int thread_control;
+static int period_control;
 static struct ndctl_cmd *pcmd;
-static meminfo output;
+static meminfo output[6];
+static meminfo res;
+static meminfo init_rw[6];
 static input_info input;
 static struct nd_cmd_vendor_tail *tail;
 static int rc;
 static int kt_free_block(void);
+static void monitor_media(void);
 
 static struct kobject *frblk_kobj;
 
@@ -52,15 +57,14 @@ static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 {
 	return scnprintf(buf, PAGE_SIZE, "Number of called blocks: %lu\n" 
 					"Number of free blocks: %lu\n"
+					"Number of freeing blocks: %lu\n"
 					"Thread running: %d\n"
-					"MediaReads_0: %llx\n"
-					"MediaReads_1: %llx\n"
-					"MediaWrites_0: %llx\n"
-					"MediaWrites_1: %llx\n"
+					"MediaReads_0: %lu\n"
+					"MediaWrites_0: %lu\n"
 					"RC: %d\n", 
-			count_free_blocks, num_free_blocks, thread_running,
-			output.MediaReads.Uint64, output.MediaReads.Uint64_1,
-			output.MediaWrites.Uint64, output.MediaWrites.Uint64_1,
+			count_free_blocks, num_free_blocks, 
+			num_freeing_blocks, thread_control,
+			read_bytes/period_control, write_bytes/period_control,
 			rc);
 }
 
@@ -76,21 +80,27 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 	sysfs_notify(frblk_kobj, NULL, "frblk_notify");
 	if (frblk->value == 1) {
 		if (was_on == 0) {
-			thread_control = 1;
-			thread = kthread_create((int(*)(void*))kt_free_block, NULL, "kt_free_block");
-			wake_up_process(thread);
-
+			int i;
+			for(i = 0; i < 6; i++) {
+				char dev_name[6];
+				snprintf(dev_name, 6, "nmem%d", i);
+				rc = dev_nd_ioctl(dev_name, ND_IOCTL_VENDOR, 
+					(unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
+				if(rc) {
+					printk(KERN_ERR "%s: Error on nd_ioctl\n", 
+						__func__);
+				}
+				memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
+			}
+			thread_monitoring =
+				kthread_create((int(*)(void*))monitor_media, NULL,
+						"monitor_media");
+			wake_up_process(thread_monitoring);
 		}
 	} 
 	else if (frblk->value == 0) {
 		if (was_on) 
 			thread_control = 0;	
-	}
-	else if (frblk->value == 2) {
-		frblk->value = 0;
-		rc = dev_nd_ioctl("nmem0", ND_IOCTL_VENDOR, (unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
-		memcpy(&output, tail->out_buf, sizeof(meminfo));
-
 	}
 	return len;
 }
@@ -105,11 +115,21 @@ static struct frblk_attr frblk_notify = {
 	.value = 0,
 };
 
+/* Get total blocks in the free_block list
+ * */
+long get_num_pz_blocks(void)
+{
+	long tmp;
+	spin_lock(&tb_lock);
+	tmp = total_blocks;
+	spin_unlock(&tb_lock);
+	return tmp;
+}
+EXPORT_SYMBOL(get_num_pz_blocks);
+
 /* ext4_delay_free_block
  * Delay the call for ext4_free_block
- * 
  */
-
 void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block, 
 		unsigned long count, int flag)
 {
@@ -117,7 +137,7 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 	 * Here we need to put the information into the list.
 	 * Need to use kmem_cache_alloc
 	 * */
-	struct free_block_t* new = kmem_cache_alloc(allocator, GFP_KERNEL);
+	struct free_block_t *new = kmem_cache_alloc(allocator, GFP_KERNEL);
 	if(new) {
 		new -> inode = inode;
 		new -> block = block;
@@ -128,7 +148,12 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 	spin_lock(&fb_list_lock);
 	list_add_tail(&new -> ls, &block_list);
 	spin_unlock(&fb_list_lock);
-
+	/* Need the count for number of total blocks in the list
+	 * Should be handled with locks
+	 * */
+	spin_lock(&tb_lock);
+	total_blocks += count;
+	spin_unlock(&tb_lock);
 }
 EXPORT_SYMBOL(ext4_delay_free_block);
 
@@ -156,6 +181,9 @@ static int free_blocks(struct free_block_t *entry)
 	int ret;
 	unsigned int credits;
 	handle_t *handle = NULL;
+
+	if(!inode)
+		return 1;
 do_more:
 	overflow = 0;
 	ext4_get_group_no_and_offset(sb, block, &block_group,
@@ -203,15 +231,15 @@ do_more:
 	if (IS_DAX(inode)) {
 		/* use iomap_zero_range need to find from and length */
 		struct iomap dax_iomap, srcmap;
-		loff_t written;
+		loff_t written = 0;
 		dax_iomap.addr = block << inode->i_blkbits;
 		dax_iomap.offset = 0;
 		dax_iomap.bdev = inode -> i_sb -> s_bdev;
 		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
 		srcmap.type = 2;
-
-		written = iomap_zero_range_actor(inode, 0, inode->i_sb->s_blocksize*count, 
-				NULL, &dax_iomap, &srcmap);
+		written = iomap_zero_range_actor(inode, 0, 
+					inode->i_sb->s_blocksize*count, 
+					NULL, &dax_iomap, &srcmap);
 	}
 
 	/* New handle for journaling
@@ -222,27 +250,27 @@ do_more:
 		credits = ext4_blocks_for_truncate(inode);
 	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE, credits);
 
-	BUFFER_TRACE(bitmap_bh, "getting write access");
-	err = ext4_journal_get_write_access(handle, bitmap_bh);
-	if (err)
-		goto error_return;
+//	BUFFER_TRACE(bitmap_bh, "getting write access");
+//	err = ext4_journal_get_write_access(handle, bitmap_bh);
+//	if (err)
+//		goto error_return;
 
 	/*
 	 * We are about to modify some metadata.  Call the journal APIs
 	 * to unshare ->b_data if a currently-committing transaction is
 	 * using it
 	 */
-	BUFFER_TRACE(gd_bh, "get_write_access");
-	err = ext4_journal_get_write_access(handle, gd_bh);
-	if (err)
-		goto error_return;
-#ifdef AGGRESSIVE_CHECK
-	{
-		int i;
-		for (i = 0; i < count_clusters; i++)
-			BUG_ON(!mb_test_bit(bit + i, bitmap_bh->b_data));
-	}
-#endif
+//	BUFFER_TRACE(gd_bh, "get_write_access");
+//	err = ext4_journal_get_write_access(handle, gd_bh);
+//	if (err)
+//		goto error_return;
+//#ifdef AGGRESSIVE_CHECK
+//	{
+//		int i;
+//		for (i = 0; i < count_clusters; i++)
+//			BUG_ON(!mb_test_bit(bit + i, bitmap_bh->b_data));
+//	}
+//#endif
 	/* __GFP_NOFAIL: retry infinitely, ignore TIF_MEMDIE and memcg limit. */
 	err = ext4_mb_load_buddy_gfp(sb, block_group, &e4b,
 			GFP_NOFS|__GFP_NOFAIL);
@@ -323,14 +351,14 @@ do_more:
 	ext4_mb_unload_buddy(&e4b);
 
 	/* We dirtied the bitmap block */
-	BUFFER_TRACE(bitmap_bh, "dirtied bitmap block");
-	err = ext4_handle_dirty_metadata(handle, NULL, bitmap_bh);
+//	BUFFER_TRACE(bitmap_bh, "dirtied bitmap block");
+//	err = ext4_handle_dirty_metadata(handle, NULL, bitmap_bh);
 
 	/* And the group descriptor block */
-	BUFFER_TRACE(gd_bh, "dirtied group descriptor block");
-	ret = ext4_handle_dirty_metadata(handle, NULL, gd_bh);
-	if (!err)
-		err = ret;
+//	BUFFER_TRACE(gd_bh, "dirtied group descriptor block");
+//	ret = ext4_handle_dirty_metadata(handle, NULL, gd_bh);
+//	if (!err)
+//		err = ret;
 
 	ext4_journal_stop(handle);
 
@@ -343,8 +371,86 @@ do_more:
 error_return:
 	brelse(bitmap_bh);
 	ext4_std_error(sb, err);
+
+	/* TODO: For unlink inode, you should set inode new bit after all the
+	 * blocks have been freed and zeroed, to reuse that inode
+	 * Need to make a tree to store the count of contiguous blocks of inode
+	 * which are getting freed later and when the count is zero, inode can
+	 * be freed finally
+	 * */
+
 	return 0;
 }
+
+/* TODO: Free and zeroout those blocks for nclusters
+ * Number of pre-zero blocks must be checked before
+ * Called by ext4_has_free_clusters()
+ * */
+int ext4_free_num_blocks(long count) 
+{
+	struct free_block_t *entry;
+	int err;
+
+	/* Check if thread is running. If it is, we are really out of free
+	 * blocks. ENOSPC
+	 */
+	spin_lock(&tb_lock);
+	if(thread_control && total_blocks) { 
+		spin_unlock(&tb_lock);
+		return 0;
+	}
+	spin_unlock(&tb_lock);
+
+	while(count){
+		err = 0;
+//		printk(KERN_ERR "%s: in lock\n", __func__);
+		spin_lock(&fb_list_lock);
+		entry = list_first_entry(&block_list,
+				struct free_block_t, ls);
+		//Check if this entry has more blocks than needed
+		if(count < entry->count) {
+			//Free only needed amount and
+			//update the entry info (pblk, count)
+			struct free_block_t partial;
+			partial.inode = entry -> inode;
+			partial.block = entry -> block;
+			partial.count = count;
+
+			entry -> block += count;
+			entry -> count -= count;
+			spin_unlock(&fb_list_lock);
+
+			err = free_blocks(&partial);
+			spin_lock(&tb_lock);
+			total_blocks -= count;
+			spin_unlock(&tb_lock);
+
+
+//			printk(KERN_ERR "%s: out lock\n", __func__);
+			break;
+
+		} else { // Free this entry and subtract the amount from count
+			struct free_block_t full;
+			full.inode = entry -> inode;
+			full.block = entry -> block;
+			full.count = entry -> count;
+			list_del(&entry -> ls);
+			spin_unlock(&fb_list_lock);
+
+			count -= full.count;
+			err = free_blocks(&full);
+			
+			spin_lock(&tb_lock);
+			total_blocks -= full.count;
+			spin_unlock(&tb_lock);
+
+			kmem_cache_free(allocator, entry);
+		}
+//		printk(KERN_ERR "%s: out lock\n", __func__);
+	}
+	return 1;
+}
+EXPORT_SYMBOL(ext4_free_num_blocks);
 
 static int kt_free_block(void)
 {
@@ -352,9 +458,8 @@ static int kt_free_block(void)
 		/* Do rest of the free blocks */			
 		struct free_block_t *entry;
 		int err;
-		thread_running = 1;
 		spin_lock(&fb_list_lock);
-		while (!list_empty(&block_list)) {
+		while (!list_empty(&block_list) && thread_control) {
 			spin_unlock(&fb_list_lock);
 			err = 0;
 			spin_lock(&fb_list_lock);
@@ -365,20 +470,24 @@ static int kt_free_block(void)
 				spin_lock(&fb_list_lock);
 				list_del(&entry -> ls);
 				spin_unlock(&fb_list_lock);
+				spin_lock(&tb_lock);
+				total_blocks -= entry->count;
+				spin_unlock(&tb_lock);
 				kmem_cache_free(allocator, entry);
 				spin_lock(&fb_list_lock);
 				continue;
 			}
-			num_free_blocks += entry->count;
+			num_freeing_blocks += entry->count;
 			err = free_blocks(entry);
-			if (err) {
-				printk(KERN_ERR "Free blocks error!!!!\n");
-			}
-
+			num_freeing_blocks = 0;
+			num_free_blocks += entry->count;
 			spin_lock(&fb_list_lock);
 			list_del(&entry -> ls);
 			spin_unlock(&fb_list_lock);
-
+			
+			spin_lock(&tb_lock);
+			total_blocks -= entry->count;
+			spin_unlock(&tb_lock);
 			kmem_cache_free(allocator, entry);
 			count_free_blocks++;
 
@@ -386,11 +495,102 @@ static int kt_free_block(void)
 			spin_lock(&fb_list_lock);
 		}
 		spin_unlock(&fb_list_lock);
-		msleep(100);
+		msleep(1000);
 	}
-
-	thread_running = 0;
 	return 0;
+}
+
+static void monitor_media(void)
+{
+	msleep(900);
+	while(1) {
+		int i;
+		int idle = 0;
+		char dev_name[6];
+	
+		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
+		res.MediaReads.Uint64 = 0;
+		res.MediaReads.Uint64_1 = 0;
+		res.MediaWrites.Uint64 = 0;
+		res.MediaWrites.Uint64_1 = 0;
+
+		for(i = 0; i < 6; i++) {
+			snprintf(dev_name, 6, "nmem%d", i);
+			rc = dev_nd_ioctl(dev_name, ND_IOCTL_VENDOR, 
+				(unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
+			if(rc) 
+				printk(KERN_ERR "%s: Error on nd_ioctl\n", __func__);
+			memcpy(&output[i], tail->out_buf, sizeof(meminfo));
+		//	printk(KERN_ERR "%s: read: %llu\n"
+		//			"write: %llu\n",
+		//			__func__,
+		//			output[i].MediaReads.Uint64,
+		//			output[i].MediaWrites.Uint64);
+			res.MediaReads.Uint64 += output[i].MediaReads.Uint64 -
+						 init_rw[i].MediaReads.Uint64;
+			res.MediaReads.Uint64_1 += output[i].MediaReads.Uint64_1
+						   - init_rw[i].MediaReads.Uint64_1;
+			res.MediaWrites.Uint64 += output[i].MediaWrites.Uint64 -
+						  init_rw[i].MediaWrites.Uint64;
+			res.MediaWrites.Uint64_1 += output[i].MediaWrites.Uint64_1
+						    - init_rw[i].MediaWrites.Uint64_1;
+			init_rw[i].MediaReads.Uint64 = output[i].MediaReads.Uint64;
+			init_rw[i].MediaReads.Uint64_1 = output[i].MediaReads.Uint64_1;
+			init_rw[i].MediaWrites.Uint64 = output[i].MediaWrites.Uint64;
+			init_rw[i].MediaWrites.Uint64_1 = output[i].MediaWrites.Uint64_1;
+
+		}
+		/* Calculate the current speed of read and write
+		 * Also needs to store before, current and take good care of
+		 * number of freed amount of zeroed blocks with current I/O
+		 * speed - how?
+		 * */
+		//Total reads = res.MediaReads.Uint64 * 64 bytes, total writes =
+		//res.MediaWrites.Uint64 * 64 bytes
+		//for now, Uint64_1 would not be needed
+		//Caclculate each of read and write since they do not sum up
+		//together
+		read_bytes = res.MediaReads.Uint64 * 64;
+		if(res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096){
+			write_bytes = 0;
+		} else {
+			write_bytes = res.MediaWrites.Uint64*64 
+					- num_freeing_blocks*4096;
+		}
+
+		read_bytes /= 1024*1024;
+		write_bytes /= 1024*1024;
+		if( (read_bytes / period_control < 100) && 
+			(write_bytes / period_control < 100) ){
+			idle = 1;
+			/* We should wake up free_block thread when idle
+			 * */
+			spin_lock(&tb_lock);
+			if(total_blocks) {
+				spin_unlock(&tb_lock);
+				if(!thread_control) {
+					thread_control = 1;
+					thread = kthread_create((int(*)(void*))kt_free_block,
+							NULL, "kt_free_block");
+					wake_up_process(thread);
+				}
+			} else {
+				spin_unlock(&tb_lock);
+				thread_control = 0;
+			}
+		}
+		else {
+			thread_control = 0;
+		}
+		//Period controller, when idle -1 second for each time at max of
+		//10. +1 for non-idle time
+		period_control = idle ? period_control-1 : period_control+1;
+		if(idle) 
+			period_control = max(period_control, 1);
+		else
+			period_control = min(period_control, 10);
+		msleep(1000 * period_control);
+	}
 }
 
 static int __init kt_free_block_init(void) 
@@ -400,14 +600,20 @@ static int __init kt_free_block_init(void)
 	rc = 0;
 	count_free_blocks = 0;
 	num_free_blocks = 0;
-	thread_running = 0;
+	num_freeing_blocks = 0;
+	total_blocks = 0;
 	thread_control = 0;
+	period_control = 1;
 	input.MemoryPage = 0x0;
-	output.MediaReads.Uint64 = 0;
-	output.MediaReads.Uint64_1 = 0;
-	output.MediaWrites.Uint64 = 0;
-	output.MediaWrites.Uint64_1 = 0;
+	res.MediaReads.Uint64 = 0;
+	res.MediaReads.Uint64_1 = 0;
+	res.MediaWrites.Uint64 = 0;
+	res.MediaWrites.Uint64_1 = 0;
+	read_bytes = 0;
+	write_bytes = 0;
 	spin_lock_init(&fb_list_lock);
+	spin_lock_init(&tb_lock);
+	spin_lock_init(&list_lock);
 	INIT_LIST_HEAD(&block_list);
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,
 			SLAB_RECLAIM_ACCOUNT);
@@ -423,13 +629,9 @@ static int __init kt_free_block_init(void)
 		printk("%s: sysfs_create_group() failed. ret=%d\n", __func__,
 				ret);
 	}
-	//	if(thread){
-	//		wake_up_process(thread);
-	//	}
-	
-	/* TODO: Try ioctl to read MediaReads, MediaWrites of PM device
-	 * Initial values
-	*/
+
+	/* Initialize nd_ioctl commands and buffer
+	 * */
 	size = sizeof(*pcmd) + sizeof(struct nd_cmd_vendor_hdr) 
 		+ sizeof(struct nd_cmd_vendor_tail) + 128 + 128;
 	ndctl_alloc = kmem_cache_create("delay_free_block", size, 0, 0, NULL);
@@ -449,10 +651,7 @@ static int __init kt_free_block_init(void)
 
 static void __exit kt_free_block_cleanup(void)
 {
-	printk(KERN_ERR "Cleaning up kt_free_block module...\n");
-	if(kthread_stop(thread)){
-		printk(KERN_ERR "kt_free_block: Thread Stopped!\n");
-	}
+	printk(KERN_INFO "Cleaning up kt_free_block module...\n");
 	kmem_cache_free(ndctl_alloc, pcmd);
 	kmem_cache_shrink(ext4_free_data_cachep);
 	kmem_cache_shrink(allocator);

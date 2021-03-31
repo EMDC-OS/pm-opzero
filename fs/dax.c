@@ -1073,6 +1073,7 @@ int dax_iomap_zero(loff_t pos, unsigned offset, unsigned size,
 	dax_read_unlock(id);
 	return 0;
 }
+EXPORT_SYMBOL(dax_iomap_zero);
 
 static loff_t
 dax_iomap_actor(struct inode *inode, loff_t pos, loff_t length, void *data,

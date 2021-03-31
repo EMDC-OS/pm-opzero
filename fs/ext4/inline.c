@@ -618,6 +618,11 @@ retry:
 			ext4_orphan_del(NULL, inode);
 	}
 
+	if(IS_DAX(inode)) {
+		if (ret == -ENOSPC && ext4_should_retry_alloc_dax(inode->i_sb,
+			&retries, 1))
+			goto retry;
+	}
 	if (ret == -ENOSPC && ext4_should_retry_alloc(inode->i_sb, &retries))
 		goto retry;
 
@@ -900,6 +905,12 @@ retry_journal:
 							    inode,
 							    flags,
 							    fsdata);
+		if(IS_DAX(inode)) {
+			if (ret == -ENOSPC &&
+				ext4_should_retry_alloc_dax(inode->i_sb,
+				&retries, 1))
+				goto retry_journal;
+		}
 		if (ret == -ENOSPC &&
 		    ext4_should_retry_alloc(inode->i_sb, &retries))
 			goto retry_journal;

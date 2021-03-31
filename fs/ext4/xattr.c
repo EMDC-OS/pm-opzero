@@ -1342,6 +1342,14 @@ retry:
 				      EXT4_GET_BLOCKS_CREATE);
 		if (ret <= 0) {
 			ext4_mark_inode_dirty(handle, ea_inode);
+			if(IS_DAX(ea_inode)) {
+				if(ret == -ENOSPC &&
+					ext4_should_retry_alloc_dax(ea_inode->i_sb,
+					&retries, max_blocks)) {
+					ret = 0;
+					goto retry;
+				}
+			}
 			if (ret == -ENOSPC &&
 			    ext4_should_retry_alloc(ea_inode->i_sb, &retries)) {
 				ret = 0;
@@ -2490,6 +2498,12 @@ retry:
 		error = ext4_xattr_set_handle(handle, inode, name_index, name,
 					      value, value_len, flags);
 		error2 = ext4_journal_stop(handle);
+		if(IS_DAX(inode)) {
+			if (error == -ENOSPC &&
+					ext4_should_retry_alloc_dax(sb,
+					&retries, value_len))
+				goto retry;
+		}
 		if (error == -ENOSPC &&
 		    ext4_should_retry_alloc(sb, &retries))
 			goto retry;

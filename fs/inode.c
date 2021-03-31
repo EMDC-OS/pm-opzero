@@ -626,12 +626,12 @@ static void evict_zero(struct inode *inode)
 
 	remove_inode_hash(inode);
 
-	spin_lock(&inode->i_lock);
-	wake_up_bit(&inode->i_state, __I_NEW);
-	BUG_ON(inode->i_state != (I_FREEING | I_CLEAR));
-	spin_unlock(&inode->i_lock);
-
-	destroy_inode(inode);
+//	spin_lock(&inode->i_lock);
+//	wake_up_bit(&inode->i_state, __I_NEW);
+//	BUG_ON(inode->i_state != (I_FREEING | I_CLEAR));
+//	spin_unlock(&inode->i_lock);
+//
+//	destroy_inode(inode);
 }
 
 /*

@@ -2613,7 +2613,7 @@ static int ext4_create(struct inode *dir, struct dentry *dentry, umode_t mode,
 	handle_t *handle;
 	struct inode *inode;
 	int err, credits, retries = 0;
-
+	int is_dax = 0;
 	err = dquot_initialize(dir);
 	if (err)
 		return err;
@@ -2630,11 +2630,18 @@ retry:
 		inode->i_fop = &ext4_file_operations;
 		ext4_set_aops(inode);
 		err = ext4_add_nondir(handle, dentry, &inode);
+		if(err == -ENOSPC && inode->i_flags & S_DAX)
+			is_dax = 1;
 	}
 	if (handle)
 		ext4_journal_stop(handle);
 	if (!IS_ERR_OR_NULL(inode))
 		iput(inode);
+	if(is_dax) {
+		if(err == -ENOSPC && ext4_should_retry_alloc_dax(dir->i_sb,
+			&retries, 1))
+			goto retry;
+	}
 	if (err == -ENOSPC && ext4_should_retry_alloc(dir->i_sb, &retries))
 		goto retry;
 	return err;
@@ -2667,6 +2674,12 @@ retry:
 		ext4_journal_stop(handle);
 	if (!IS_ERR_OR_NULL(inode))
 		iput(inode);
+	
+	if(IS_DAX(dir)) {
+		if(err == -ENOSPC && ext4_should_retry_alloc_dax(dir->i_sb,
+			&retries, 1))
+			goto retry;
+	}
 	if (err == -ENOSPC && ext4_should_retry_alloc(dir->i_sb, &retries))
 		goto retry;
 	return err;
@@ -2703,6 +2716,12 @@ retry:
 	}
 	if (handle)
 		ext4_journal_stop(handle);
+
+	if(IS_DAX(dir)) {
+		if(err == -ENOSPC && ext4_should_retry_alloc_dax(dir->i_sb,
+			&retries, 1))
+			goto retry;
+	}
 	if (err == -ENOSPC && ext4_should_retry_alloc(dir->i_sb, &retries))
 		goto retry;
 	return err;
@@ -2838,6 +2857,11 @@ out_stop:
 	if (handle)
 		ext4_journal_stop(handle);
 out_retry:
+	if (IS_DAX(dir)) {
+		if (err == -ENOSPC && ext4_should_retry_alloc_dax(dir->i_sb,
+			&retries, 1))
+			goto retry;
+	}
 	if (err == -ENOSPC && ext4_should_retry_alloc(dir->i_sb, &retries))
 		goto retry;
 	return err;
@@ -3451,6 +3475,11 @@ retry:
 		iput(inode);
 	}
 	ext4_journal_stop(handle);
+	if(IS_DAX(dir)) {
+		if (err == -ENOSPC && ext4_should_retry_alloc_dax(dir->i_sb,
+			&retries, 1))
+			goto retry;
+	}
 	if (err == -ENOSPC && ext4_should_retry_alloc(dir->i_sb, &retries))
 		goto retry;
 	return err;
@@ -3660,6 +3689,11 @@ retry:
 	if (IS_ERR(wh)) {
 		if (handle)
 			ext4_journal_stop(handle);
+		if(IS_DAX(wh)) {
+			if (PTR_ERR(wh) == -ENOSPC &&
+					ext4_should_retry_alloc_dax(ent->dir->i_sb, &retries, 1))
+				goto retry;
+		}	
 		if (PTR_ERR(wh) == -ENOSPC &&
 		    ext4_should_retry_alloc(ent->dir->i_sb, &retries))
 			goto retry;

@@ -1591,7 +1591,12 @@ retry_journal:
 			if (inode->i_nlink)
 				ext4_orphan_del(NULL, inode);
 		}
-
+		if(IS_DAX(inode)) {
+			if (ret == -ENOSPC &&
+					ext4_should_retry_alloc_dax(inode->i_sb,
+					&retries, needed_blocks))
+				goto retry_journal;
+		}
 		if (ret == -ENOSPC &&
 		    ext4_should_retry_alloc(inode->i_sb, &retries))
 			goto retry_journal;
@@ -3775,7 +3780,8 @@ retry:
 		ret = -ENOTBLK;
 
 	ext4_journal_stop(handle);
-	if (ret == -ENOSPC && ext4_should_retry_alloc(inode->i_sb, &retries))
+	if (ret == -ENOSPC && ext4_should_retry_alloc_dax(inode->i_sb, &retries,
+		map->m_len))
 		goto retry;
 
 	return ret;
