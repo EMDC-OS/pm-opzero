@@ -30,6 +30,9 @@ kmem_zone_t	*xfs_efd_zone;
 
 static const struct xfs_item_ops xfs_efi_item_ops;
 
+void xfs_delay_free_block(struct xfs_mount *mp, xfs_fsblock_t start_block, xfs_extlen_t len, uint64_t oi_owner, 
+		xfs_fileoff_t oi_offset, unsigned int oi_flags, bool skip_discard);
+
 static inline struct xfs_efi_log_item *EFI_ITEM(struct xfs_log_item *lip)
 {
 	return container_of(lip, struct xfs_efi_log_item, efi_item);
@@ -371,8 +374,15 @@ xfs_trans_free_extent(
 
 	trace_xfs_bmap_free_deferred(tp->t_mountp, agno, 0, agbno, ext_len);
 
-	error = __xfs_free_extent(tp, start_block, ext_len,
-				  oinfo, XFS_AG_RESV_NONE, skip_discard);
+	error = 0;
+	if (oinfo)
+		xfs_delay_free_block(mp, start_block, ext_len, oinfo->oi_owner, 
+				oinfo->oi_offset, oinfo->oi_flags, skip_discard);
+	else
+		xfs_delay_free_block(mp, start_block, ext_len, 0, 
+				0, 0, skip_discard);
+	//error = __xfs_free_extent(tp, start_block, ext_len,
+				  //oinfo, XFS_AG_RESV_NONE, skip_discard);
 	/*
 	 * Mark the transaction dirty, even on error. This ensures the
 	 * transaction is aborted, which:

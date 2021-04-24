@@ -3899,10 +3899,10 @@ exit2:
 	}
 	inode_unlock(path.dentry->d_inode);
 	if (inode) {
-		if (!IS_DAX(inode))
-			iput(inode);	/* truncate the inode here */
-		else {
+		if (IS_DAX(inode) && inode->i_sb->s_op->evict_zero_inode)
 			iput_zero(inode);
+		else {
+			iput(inode);	/* truncate the inode here */
 		}
 		inode = NULL;
 	}
