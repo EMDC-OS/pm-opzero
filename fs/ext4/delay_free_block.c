@@ -18,7 +18,7 @@ static spinlock_t list_lock;
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
 static unsigned long num_freeing_blocks;
-static long total_blocks;
+static atomic64_t total_blocks;
 static unsigned long read_bytes, write_bytes;
 static int thread_control;
 static int period_control;
@@ -31,6 +31,7 @@ static struct nd_cmd_vendor_tail *tail;
 static int rc;
 static int kt_free_block(void);
 static void monitor_media(void);
+static void flush(void);
 
 static struct kobject *frblk_kobj;
 
@@ -102,6 +103,9 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 		if (was_on) 
 			thread_control = 0;	
 	}
+	else if (frblk->value == 3) {
+		flush();
+	}
 	return len;
 }
 
@@ -119,11 +123,7 @@ static struct frblk_attr frblk_notify = {
  * */
 long get_num_pz_blocks(void)
 {
-	long tmp;
-	spin_lock(&tb_lock);
-	tmp = total_blocks;
-	spin_unlock(&tb_lock);
-	return tmp;
+	return atomic64_read(&total_blocks);
 }
 EXPORT_SYMBOL(get_num_pz_blocks);
 
@@ -151,9 +151,7 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 	/* Need the count for number of total blocks in the list
 	 * Should be handled with locks
 	 * */
-	spin_lock(&tb_lock);
-	total_blocks += count;
-	spin_unlock(&tb_lock);
+	atomic64_add(count, &total_blocks);
 }
 EXPORT_SYMBOL(ext4_delay_free_block);
 
@@ -213,18 +211,18 @@ do_more:
 		goto error_return;
 	}
 
-	if (in_range(ext4_block_bitmap(sb, gdp), block, count) ||
-			in_range(ext4_inode_bitmap(sb, gdp), block, count) ||
-			in_range(block, ext4_inode_table(sb, gdp),
-				sbi->s_itb_per_group) ||
-			in_range(block + count - 1, ext4_inode_table(sb, gdp),
-				sbi->s_itb_per_group)) {
-
-		ext4_error(sb, "Freeing blocks in system zone - "
-				"Block = %llu, count = %lu", block, count);
-		/* err = 0. ext4_std_error should be a no op */
-		goto error_return;
-	}
+//	if (in_range(ext4_block_bitmap(sb, gdp), block, count) ||
+//			in_range(ext4_inode_bitmap(sb, gdp), block, count) ||
+//			in_range(block, ext4_inode_table(sb, gdp),
+//				sbi->s_itb_per_group) ||
+//			in_range(block + count - 1, ext4_inode_table(sb, gdp),
+//				sbi->s_itb_per_group)) {
+//
+//		ext4_error(sb, "Freeing blocks in system zone - "
+//				"Block = %llu, count = %lu", block, count);
+//		/* err = 0. ext4_std_error should be a no op */
+//		goto error_return;
+//	}
 
 	/* Modified for zeroout data blocks while trucate for dax
 	 * */
@@ -244,33 +242,12 @@ do_more:
 
 	/* New handle for journaling
 	 * */
-	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
-		credits = ext4_writepage_trans_blocks(inode);
-	else
-		credits = ext4_blocks_for_truncate(inode);
-	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE, credits);
+//	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+//		credits = ext4_writepage_trans_blocks(inode);
+//	else
+//		credits = ext4_blocks_for_truncate(inode);
+//	handle = ext4_journal_start(inode, EXT4_HT_TRUNCATE, credits);
 
-//	BUFFER_TRACE(bitmap_bh, "getting write access");
-//	err = ext4_journal_get_write_access(handle, bitmap_bh);
-//	if (err)
-//		goto error_return;
-
-	/*
-	 * We are about to modify some metadata.  Call the journal APIs
-	 * to unshare ->b_data if a currently-committing transaction is
-	 * using it
-	 */
-//	BUFFER_TRACE(gd_bh, "get_write_access");
-//	err = ext4_journal_get_write_access(handle, gd_bh);
-//	if (err)
-//		goto error_return;
-//#ifdef AGGRESSIVE_CHECK
-//	{
-//		int i;
-//		for (i = 0; i < count_clusters; i++)
-//			BUG_ON(!mb_test_bit(bit + i, bitmap_bh->b_data));
-//	}
-//#endif
 	/* __GFP_NOFAIL: retry infinitely, ignore TIF_MEMDIE and memcg limit. */
 	err = ext4_mb_load_buddy_gfp(sb, block_group, &e4b,
 			GFP_NOFS|__GFP_NOFAIL);
@@ -284,7 +261,7 @@ do_more:
 	 * written in writeback mode since writeback mode has weak data
 	 * consistency guarantees.
 	 */
-	if (ext4_handle_valid(handle) &&
+	if (0 && ext4_handle_valid(handle) &&
 			((flags & EXT4_FREE_BLOCKS_METADATA) ||
 			 !ext4_should_writeback_data(inode))) {
 		struct ext4_free_data *new_entry;
@@ -343,24 +320,13 @@ do_more:
 	 */
 	if (!(flags & EXT4_FREE_BLOCKS_RERESERVE_CLUSTER)) {
 		if (!(flags & EXT4_FREE_BLOCKS_NO_QUOT_UPDATE))
-			dquot_free_block(inode, EXT4_C2B(sbi, count_clusters));
+			dquot_free_block_nodirty(inode, EXT4_C2B(sbi, count_clusters));
 		percpu_counter_add(&sbi->s_freeclusters_counter,
 				count_clusters);
 	}
 
 	ext4_mb_unload_buddy(&e4b);
-
-	/* We dirtied the bitmap block */
-//	BUFFER_TRACE(bitmap_bh, "dirtied bitmap block");
-//	err = ext4_handle_dirty_metadata(handle, NULL, bitmap_bh);
-
-	/* And the group descriptor block */
-//	BUFFER_TRACE(gd_bh, "dirtied group descriptor block");
-//	ret = ext4_handle_dirty_metadata(handle, NULL, gd_bh);
-//	if (!err)
-//		err = ret;
-
-	ext4_journal_stop(handle);
+//	ext4_journal_stop(handle);
 
 	if (overflow && !err) {
 		block += count;
@@ -394,12 +360,8 @@ int ext4_free_num_blocks(long count)
 	/* Check if thread is running. If it is, we are really out of free
 	 * blocks. ENOSPC
 	 */
-	spin_lock(&tb_lock);
-	if(thread_control && total_blocks) { 
-		spin_unlock(&tb_lock);
+	if(thread_control && atomic64_read(&total_blocks)) 
 		return 0;
-	}
-	spin_unlock(&tb_lock);
 
 	while(count){
 		err = 0;
@@ -421,10 +383,7 @@ int ext4_free_num_blocks(long count)
 			spin_unlock(&fb_list_lock);
 
 			err = free_blocks(&partial);
-			spin_lock(&tb_lock);
-			total_blocks -= count;
-			spin_unlock(&tb_lock);
-
+			atomic64_sub(count, &total_blocks);
 
 //			printk(KERN_ERR "%s: out lock\n", __func__);
 			break;
@@ -440,9 +399,7 @@ int ext4_free_num_blocks(long count)
 			count -= full.count;
 			err = free_blocks(&full);
 			
-			spin_lock(&tb_lock);
-			total_blocks -= full.count;
-			spin_unlock(&tb_lock);
+			atomic64_sub(count, &total_blocks);
 
 			kmem_cache_free(allocator, entry);
 		}
@@ -460,34 +417,27 @@ static int kt_free_block(void)
 		int err;
 		spin_lock(&fb_list_lock);
 		while (!list_empty(&block_list) && thread_control) {
-			spin_unlock(&fb_list_lock);
 			err = 0;
-			spin_lock(&fb_list_lock);
 			entry = list_first_entry(&block_list,
 					struct free_block_t, ls);
-			spin_unlock(&fb_list_lock);
 			if (entry -> inode == NULL) {
-				spin_lock(&fb_list_lock);
 				list_del(&entry -> ls);
 				spin_unlock(&fb_list_lock);
-				spin_lock(&tb_lock);
-				total_blocks -= entry->count;
-				spin_unlock(&tb_lock);
+
+				atomic64_sub(entry->count, &total_blocks);
+
 				kmem_cache_free(allocator, entry);
 				spin_lock(&fb_list_lock);
 				continue;
 			}
-			num_freeing_blocks += entry->count;
-			err = free_blocks(entry);
-			num_freeing_blocks = 0;
-			num_free_blocks += entry->count;
-			spin_lock(&fb_list_lock);
 			list_del(&entry -> ls);
 			spin_unlock(&fb_list_lock);
+
+			num_freeing_blocks += entry->count;
+			err = free_blocks(entry);
+			num_free_blocks += entry->count;
 			
-			spin_lock(&tb_lock);
-			total_blocks -= entry->count;
-			spin_unlock(&tb_lock);
+			atomic64_sub(entry->count, &total_blocks);
 			kmem_cache_free(allocator, entry);
 			count_free_blocks++;
 
@@ -500,6 +450,40 @@ static int kt_free_block(void)
 	return 0;
 }
 
+static void flush(void)
+{
+	struct free_block_t *entry;
+	int err;
+	spin_lock(&fb_list_lock);
+	while (!list_empty(&block_list)) {
+		err = 0;
+		entry = list_first_entry(&block_list,
+				struct free_block_t, ls);
+		if (entry -> inode == NULL) {
+			list_del(&entry -> ls);
+			spin_unlock(&fb_list_lock);
+			atomic64_sub(entry-> count, &total_blocks);
+			kmem_cache_free(allocator, entry);
+			spin_lock(&fb_list_lock);
+			continue;
+		}
+		list_del(&entry -> ls);
+		spin_unlock(&fb_list_lock);
+
+		num_freeing_blocks += entry->count;
+		err = free_blocks(entry);
+		num_free_blocks += entry->count;
+		
+		atomic64_sub(entry->count, &total_blocks);
+		kmem_cache_free(allocator, entry);
+		count_free_blocks++;
+
+		/* This lock is for loop condition check */
+		spin_lock(&fb_list_lock);
+	}
+	spin_unlock(&fb_list_lock);
+}
+
 static void monitor_media(void)
 {
 	msleep(900);
@@ -508,7 +492,7 @@ static void monitor_media(void)
 		int idle = 0;
 		char dev_name[6];
 	
-		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
+//		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
 		res.MediaWrites.Uint64 = 0;
@@ -521,11 +505,6 @@ static void monitor_media(void)
 			if(rc) 
 				printk(KERN_ERR "%s: Error on nd_ioctl\n", __func__);
 			memcpy(&output[i], tail->out_buf, sizeof(meminfo));
-		//	printk(KERN_ERR "%s: read: %llu\n"
-		//			"write: %llu\n",
-		//			__func__,
-		//			output[i].MediaReads.Uint64,
-		//			output[i].MediaWrites.Uint64);
 			res.MediaReads.Uint64 += output[i].MediaReads.Uint64 -
 						 init_rw[i].MediaReads.Uint64;
 			res.MediaReads.Uint64_1 += output[i].MediaReads.Uint64_1
@@ -550,14 +529,17 @@ static void monitor_media(void)
 		//for now, Uint64_1 would not be needed
 		//Caclculate each of read and write since they do not sum up
 		//together
-		read_bytes = res.MediaReads.Uint64 * 64;
+		read_bytes = res.MediaReads.Uint64 * 64 < num_freeing_blocks ?
+					read_bytes = 0 :
+					read_bytes = res.MediaReads.Uint64*64
+							- num_freeing_blocks*4096;
 		if(res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096){
 			write_bytes = 0;
 		} else {
 			write_bytes = res.MediaWrites.Uint64*64 
 					- num_freeing_blocks*4096;
 		}
-
+		num_freeing_blocks = 0;
 		read_bytes /= 1024*1024;
 		write_bytes /= 1024*1024;
 		if( (read_bytes / period_control < 100) && 
@@ -565,9 +547,7 @@ static void monitor_media(void)
 			idle = 1;
 			/* We should wake up free_block thread when idle
 			 * */
-			spin_lock(&tb_lock);
-			if(total_blocks) {
-				spin_unlock(&tb_lock);
+			if(atomic64_read(&total_blocks)) {
 				if(!thread_control) {
 					thread_control = 1;
 					thread = kthread_create((int(*)(void*))kt_free_block,
@@ -575,7 +555,6 @@ static void monitor_media(void)
 					wake_up_process(thread);
 				}
 			} else {
-				spin_unlock(&tb_lock);
 				thread_control = 0;
 			}
 		}
@@ -601,7 +580,7 @@ static int __init kt_free_block_init(void)
 	count_free_blocks = 0;
 	num_free_blocks = 0;
 	num_freeing_blocks = 0;
-	total_blocks = 0;
+	atomic64_set(&total_blocks, 0);
 	thread_control = 0;
 	period_control = 1;
 	input.MemoryPage = 0x0;
@@ -612,7 +591,6 @@ static int __init kt_free_block_init(void)
 	read_bytes = 0;
 	write_bytes = 0;
 	spin_lock_init(&fb_list_lock);
-	spin_lock_init(&tb_lock);
 	spin_lock_init(&list_lock);
 	INIT_LIST_HEAD(&block_list);
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,

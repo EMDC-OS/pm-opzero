@@ -582,16 +582,27 @@ static int ext4_has_free_clusters(struct ext4_sb_info *sbi,
 	rsv = (ext4_r_blocks_count(sbi->s_es) >> sbi->s_cluster_bits) +
 	      resv_clusters;
 
-	if (free_clusters - (nclusters + rsv + dirty_clusters) <
-					EXT4_FREECLUSTERS_WATERMARK) {
-		free_clusters  = percpu_counter_sum_positive(fcc);
-		dirty_clusters = percpu_counter_sum_positive(dcc);
-	}
+//	if (free_clusters - (nclusters + rsv + dirty_clusters) <
+//					EXT4_FREECLUSTERS_WATERMARK) {
+//		free_clusters  = percpu_counter_sum_positive(fcc);
+//		dirty_clusters = percpu_counter_sum_positive(dcc);
+//	}
 	/* Check whether we have space after accounting for current
 	 * dirty clusters & root reserved clusters.
 	 */
 	if (free_clusters >= (rsv + nclusters + dirty_clusters))
 		return 1;
+
+	/* Check if pre-zero blocks are left
+	 * */
+	if( nclusters <= get_num_pz_blocks()) {
+		/* zero out and free those blocks 
+		 * */	
+		//call free blocks for nclusters
+		if(ext4_free_num_blocks(nclusters + dirty_clusters)) {
+			return 1;
+		}
+	}
 
 	/* Hm, nope.  Are (enough) root reserved clusters available? */
 	if (uid_eq(sbi->s_resuid, current_fsuid()) ||
@@ -609,27 +620,6 @@ static int ext4_has_free_clusters(struct ext4_sb_info *sbi,
 			return 1;
 	}
 	
-	/* Check if pre-zero blocks are left
-	 * */
-
-	if( nclusters <= get_num_pz_blocks()) {
-		/* zero out and free those blocks 
-		 * */	
-		//call free blocks for nclusters
-//		int err;
-//		handle_t *handle = ext4_journal_start_sb(sbi->s_sb, EXT4_HT_MAP_BLOCKS,
-//		0);
-//		err = ext4_journal_extend(handle, 2*nclusters, 0);
-//		if(err) {
-//			ext4_journal_restart(handle, 2*nclusters, 0);
-//		}
-		if(ext4_free_num_blocks(nclusters + dirty_clusters)) {
-//			ext4_journal_stop(handle);
-			return 1;
-		}
-//		ext4_journal_stop(handle);
-	}
-
 	return 0;
 }
 

@@ -333,189 +333,189 @@ no_delete:
 	ext4_clear_inode(inode);	/* We must guarantee clearing of inode... */
 }
 
-static int zeroout_rm_idx(struct inode *inode, struct ext4_ext_path *path,
-			  int depth)
-{
-	int err;
-	ext4_fsblk_t leaf;
-	depth--;
-	path = path + depth;
-	leaf = ext4_idx_pblock(path->p_idx);
-	if (unlikely(path->p_hdr->eh_entries == 0)) {
-		EXT4_ERROR_INODE(inode, "path->p_hdr->eh_entries == 0");
-		return -EFSCORRUPTED;
-	}
-	le16_add_cpu(&path->p_hdr->eh_entries, -1);
-	while(--depth >= 0) {
-		if (path->p_idx != EXT_FIRST_INDEX(path->p_hdr))
-			break;
-		path--;
-	//	path->p_idx->ei_block = (path+1)->p_idx->ei_block;
-		
-	}
-	return err;
-}
-
-static int zeroout_leaf(struct inode *inode, struct ext4_ext_path *path,
-			ext4_lblk_t start, ext4_lblk_t end)
-{
-	int depth = ext_depth(inode);
-	struct ext4_extent_header *eh;
-	ext4_lblk_t ex_ee_block;
-	unsigned short ex_ee_len;
-	struct ext4_extent *ex;
-	if (!path[depth].p_hdr)
-		path[depth].p_hdr = ext_block_hdr(path[depth].p_bh);
-	eh = path[depth].p_hdr;
-	if (unlikely(path[depth].p_hdr == NULL)) {
-		EXT4_ERROR_INODE(inode, "path[%d].p_hdr == NULL", depth);
-		return -EFSCORRUPTED;
-	}
-	/* 
-	 * find where to start zeroing
-	 * Here, we need to be careful not to free any of the extents
-	 */
-	ex = path[depth].p_ext;
-	if (!ex)
-		ex = EXT_LAST_EXTENT(eh);
-
-	ex_ee_block = le32_to_cpu(ex->ee_block);
-	ex_ee_len = ext4_ext_get_actual_len(ex);
-
-	while (ex >= EXT_FIRST_EXTENT(eh) &&
-			ex_ee_block + ex_ee_len > start) {
-		
-		ext4_fsblk_t block = ext4_ext_pblock(ex);
-		struct iomap dax_iomap, srcmap;
-		loff_t written;
-		dax_iomap.addr = block << inode->i_blkbits;
-		dax_iomap.offset = 0;
-		dax_iomap.bdev = inode->i_sb->s_bdev;
-		dax_iomap.dax_dev = EXT4_SB(inode->i_sb)->s_daxdev;
-		srcmap.type = 2;
-		written = iomap_zero_range_actor(inode, 0,
-						 inode->i_sb->s_blocksize*ex_ee_len,
-						 NULL, &dax_iomap, &srcmap);
-//		printk(KERN_INFO "%s: Zeroout block %llu\n", __func__, block);
-		ex--;
-		ex_ee_block = le32_to_cpu(ex->ee_block);
-		ex_ee_len = ext4_ext_get_actual_len(ex);
-
-	}
-	if(path[depth].p_bh != NULL)
-		zeroout_rm_idx(inode, path, depth);
-	return 0;
-}
+//static int zeroout_rm_idx(struct inode *inode, struct ext4_ext_path *path,
+//			  int depth)
+//{
+//	int err;
+//	ext4_fsblk_t leaf;
+//	depth--;
+//	path = path + depth;
+//	leaf = ext4_idx_pblock(path->p_idx);
+//	if (unlikely(path->p_hdr->eh_entries == 0)) {
+//		EXT4_ERROR_INODE(inode, "path->p_hdr->eh_entries == 0");
+//		return -EFSCORRUPTED;
+//	}
+//	le16_add_cpu(&path->p_hdr->eh_entries, -1);
+//	while(--depth >= 0) {
+//		if (path->p_idx != EXT_FIRST_INDEX(path->p_hdr))
+//			break;
+//		path--;
+//	//	path->p_idx->ei_block = (path+1)->p_idx->ei_block;
+//		
+//	}
+//	return err;
+//}
+//
+//static int zeroout_leaf(struct inode *inode, struct ext4_ext_path *path,
+//			ext4_lblk_t start, ext4_lblk_t end)
+//{
+//	int depth = ext_depth(inode);
+//	struct ext4_extent_header *eh;
+//	ext4_lblk_t ex_ee_block;
+//	unsigned short ex_ee_len;
+//	struct ext4_extent *ex;
+//	if (!path[depth].p_hdr)
+//		path[depth].p_hdr = ext_block_hdr(path[depth].p_bh);
+//	eh = path[depth].p_hdr;
+//	if (unlikely(path[depth].p_hdr == NULL)) {
+//		EXT4_ERROR_INODE(inode, "path[%d].p_hdr == NULL", depth);
+//		return -EFSCORRUPTED;
+//	}
+//	/* 
+//	 * find where to start zeroing
+//	 * Here, we need to be careful not to free any of the extents
+//	 */
+//	ex = path[depth].p_ext;
+//	if (!ex)
+//		ex = EXT_LAST_EXTENT(eh);
+//
+//	ex_ee_block = le32_to_cpu(ex->ee_block);
+//	ex_ee_len = ext4_ext_get_actual_len(ex);
+//
+//	while (ex >= EXT_FIRST_EXTENT(eh) &&
+//			ex_ee_block + ex_ee_len > start) {
+//		
+//		ext4_fsblk_t block = ext4_ext_pblock(ex);
+//		struct iomap dax_iomap, srcmap;
+//		loff_t written;
+//		dax_iomap.addr = block << inode->i_blkbits;
+//		dax_iomap.offset = 0;
+//		dax_iomap.bdev = inode->i_sb->s_bdev;
+//		dax_iomap.dax_dev = EXT4_SB(inode->i_sb)->s_daxdev;
+//		srcmap.type = 2;
+//		written = iomap_zero_range_actor(inode, 0,
+//						 inode->i_sb->s_blocksize*ex_ee_len,
+//						 NULL, &dax_iomap, &srcmap);
+////		printk(KERN_INFO "%s: Zeroout block %llu\n", __func__, block);
+//		ex--;
+//		ex_ee_block = le32_to_cpu(ex->ee_block);
+//		ex_ee_len = ext4_ext_get_actual_len(ex);
+//
+//	}
+//	if(path[depth].p_bh != NULL)
+//		zeroout_rm_idx(inode, path, depth);
+//	return 0;
+//}
 
 /*
  * Zeroing the data blocks in the inode when unlink
  * Find the physical block numbers by traversing the extent tree and call
  * iomap_zero_range_actor for each contiguous blocks
  */
-int ext4_ext_more_to_rm(struct ext4_ext_path *path);
-struct buffer_head *
-__read_extent_tree_block(const char *function, unsigned int line, 
-			 struct inode *inode, ext4_fsblk_t pblk, int depth, 
-			 int flags);
-#define read_extent_tree_block(inode, pblk, depth, flags)		\
-	__read_extent_tree_block(__func__, __LINE__, (inode), (pblk),	\
-				 (depth), (flags))
-int __ext4_ext_check(const char *function, unsigned int line,
-			    struct inode *inode, struct ext4_extent_header *eh,
-			    int depth, ext4_fsblk_t pblk);
-#define ext4_ext_check(inode, eh, depth, pblk)			\
-	__ext4_ext_check(__func__, __LINE__, (inode), (eh), (depth), (pblk))
-
-static int zeroout(struct inode *inode)
-{
-	struct super_block *sb = inode->i_sb; 	
-	ext4_lblk_t start = (sb->s_blocksize - 1) >> EXT4_BLOCK_SIZE_BITS(sb); 
-	ext4_lblk_t end = EXT_MAX_BLOCKS -1;
-	//struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
-	int depth = ext_depth(inode);
-	struct ext4_ext_path *path = NULL;
-	struct partial_cluster partial;
-	int i, err = 0;
-	__le16 *entries = kcalloc(depth+1, sizeof(__le16), GFP_NOFS | __GFP_NOFAIL);
-	partial.pclu = 0;
-	partial.lblk = 0;
-	partial.state = initial;
-	/*
-	 * Initial extent setup to make a list of blocks in chunck
-	 */
-	path = kcalloc(depth + 1, sizeof(struct ext4_ext_path),
-			GFP_NOFS | __GFP_NOFAIL);
-	path[0].p_maxdepth = path[0].p_depth = depth;
-	path[0].p_hdr = ext_inode_hdr(inode);
-	entries[0] = path[0].p_hdr->eh_entries;
-	i = 0;
-
-	if (ext4_ext_check(inode, path[0].p_hdr, depth, 0)) {
-		err = -EFSCORRUPTED;
-		return err;
-	}
-	err = 0;
-	while (i >= 0 && err == 0) {
-		if (i == depth) {
-			/* this is leaf block */
-			err = zeroout_leaf(inode, path,
-					start, end);
-			brelse(path[i].p_bh);
-			path[i].p_bh = NULL;	
-			i--;
-			continue;
-		}
-
-		/* this is index block */
-		if (!path[i].p_hdr) {
-			path[i].p_hdr = ext_block_hdr(path[i].p_bh);
-			entries[i] = path[i].p_hdr->eh_entries;
-		}
-
-		if (!path[i].p_idx) {
-			/* this level hasn't been touched yet */
-			path[i].p_idx = EXT_LAST_INDEX(path[i].p_hdr);
-			path[i].p_block = le16_to_cpu(path[i].p_hdr->eh_entries)+1;
-		} else {
-			/* we were already here, see at next index */
-			path[i].p_idx--;
-		}
-
-		if (ext4_ext_more_to_rm(path + i)) {
-			struct buffer_head *bh;
-			/* go to the next level */
-			memset(path + i + 1, 0, sizeof(*path));
-			bh = read_extent_tree_block(inode,
-				ext4_idx_pblock(path[i].p_idx), depth - i - 1,
-				EXT4_EX_NOCACHE);
-			if (IS_ERR(bh)) {
-				/* should we reset i_size? */
-				err = PTR_ERR(bh);
-				break;
-			}
-			if (WARN_ON(i + 1 > depth)) {
-				err = -EFSCORRUPTED;
-				break;
-			}
-			path[i + 1].p_bh = bh;
-			path[i].p_block = le16_to_cpu(path[i].p_hdr->eh_entries);
-			i++;
-		} else {
-			if(path[i].p_hdr->eh_entries == 0 && i > 0) {
-				zeroout_rm_idx(inode, path, i);
-			}
-			brelse(path[i].p_bh);
-			path[i].p_bh = NULL;
-			i--;
-		}
-	}
-	for(i = 0; i < depth; i++) {
-		path[i].p_hdr->eh_entries = entries[i];
-	}
-	kfree(path);
-	kfree(entries);
-	return err;
-}
+//int ext4_ext_more_to_rm(struct ext4_ext_path *path);
+//struct buffer_head *
+//__read_extent_tree_block(const char *function, unsigned int line, 
+//			 struct inode *inode, ext4_fsblk_t pblk, int depth, 
+//			 int flags);
+//#define read_extent_tree_block(inode, pblk, depth, flags)		\
+//	__read_extent_tree_block(__func__, __LINE__, (inode), (pblk),	\
+//				 (depth), (flags))
+//int __ext4_ext_check(const char *function, unsigned int line,
+//			    struct inode *inode, struct ext4_extent_header *eh,
+//			    int depth, ext4_fsblk_t pblk);
+//#define ext4_ext_check(inode, eh, depth, pblk)			\
+//	__ext4_ext_check(__func__, __LINE__, (inode), (eh), (depth), (pblk))
+//
+//static int zeroout(struct inode *inode)
+//{
+//	struct super_block *sb = inode->i_sb; 	
+//	ext4_lblk_t start = (sb->s_blocksize - 1) >> EXT4_BLOCK_SIZE_BITS(sb); 
+//	ext4_lblk_t end = EXT_MAX_BLOCKS -1;
+//	//struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+//	int depth = ext_depth(inode);
+//	struct ext4_ext_path *path = NULL;
+//	struct partial_cluster partial;
+//	int i, err = 0;
+//	__le16 *entries = kcalloc(depth+1, sizeof(__le16), GFP_NOFS | __GFP_NOFAIL);
+//	partial.pclu = 0;
+//	partial.lblk = 0;
+//	partial.state = initial;
+//	/*
+//	 * Initial extent setup to make a list of blocks in chunck
+//	 */
+//	path = kcalloc(depth + 1, sizeof(struct ext4_ext_path),
+//			GFP_NOFS | __GFP_NOFAIL);
+//	path[0].p_maxdepth = path[0].p_depth = depth;
+//	path[0].p_hdr = ext_inode_hdr(inode);
+//	entries[0] = path[0].p_hdr->eh_entries;
+//	i = 0;
+//
+//	if (ext4_ext_check(inode, path[0].p_hdr, depth, 0)) {
+//		err = -EFSCORRUPTED;
+//		return err;
+//	}
+//	err = 0;
+//	while (i >= 0 && err == 0) {
+//		if (i == depth) {
+//			/* this is leaf block */
+//			err = zeroout_leaf(inode, path,
+//					start, end);
+//			brelse(path[i].p_bh);
+//			path[i].p_bh = NULL;	
+//			i--;
+//			continue;
+//		}
+//
+//		/* this is index block */
+//		if (!path[i].p_hdr) {
+//			path[i].p_hdr = ext_block_hdr(path[i].p_bh);
+//			entries[i] = path[i].p_hdr->eh_entries;
+//		}
+//
+//		if (!path[i].p_idx) {
+//			/* this level hasn't been touched yet */
+//			path[i].p_idx = EXT_LAST_INDEX(path[i].p_hdr);
+//			path[i].p_block = le16_to_cpu(path[i].p_hdr->eh_entries)+1;
+//		} else {
+//			/* we were already here, see at next index */
+//			path[i].p_idx--;
+//		}
+//
+//		if (ext4_ext_more_to_rm(path + i)) {
+//			struct buffer_head *bh;
+//			/* go to the next level */
+//			memset(path + i + 1, 0, sizeof(*path));
+//			bh = read_extent_tree_block(inode,
+//				ext4_idx_pblock(path[i].p_idx), depth - i - 1,
+//				EXT4_EX_NOCACHE);
+//			if (IS_ERR(bh)) {
+//				/* should we reset i_size? */
+//				err = PTR_ERR(bh);
+//				break;
+//			}
+//			if (WARN_ON(i + 1 > depth)) {
+//				err = -EFSCORRUPTED;
+//				break;
+//			}
+//			path[i + 1].p_bh = bh;
+//			path[i].p_block = le16_to_cpu(path[i].p_hdr->eh_entries);
+//			i++;
+//		} else {
+//			if(path[i].p_hdr->eh_entries == 0 && i > 0) {
+//				zeroout_rm_idx(inode, path, i);
+//			}
+//			brelse(path[i].p_bh);
+//			path[i].p_bh = NULL;
+//			i--;
+//		}
+//	}
+//	for(i = 0; i < depth; i++) {
+//		path[i].p_hdr->eh_entries = entries[i];
+//	}
+//	kfree(path);
+//	kfree(entries);
+//	return err;
+//}
 
 void ext4_evict_zero_inode(struct inode *inode)
 {
