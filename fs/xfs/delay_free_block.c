@@ -347,7 +347,7 @@ static void monitor_media(void)
 		int idle = 0;
 		char dev_name[6];
 	
-		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
+//		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
 		res.MediaWrites.Uint64 = 0;
@@ -389,9 +389,8 @@ static void monitor_media(void)
 		//for now, Uint64_1 would not be needed
 		//Caclculate each of read and write since they do not sum up
 		//together
-		read_bytes = res.MediaReads.Uint64 * 64 < num_freeing_blocks ?
-					0 :
-					res.MediaReads.Uint64*64
+		read_bytes = res.MediaReads.Uint64 * 64 < num_freeing_blocks * 4096 ?
+					0 : res.MediaReads.Uint64*64
 						- num_freeing_blocks*4096;
 		if(res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096){
 			write_bytes = 0;

@@ -4126,11 +4126,11 @@ xfs_bmapi_allocate(
 	if (error || bma->blkno == NULLFSBLOCK)
 		return error;
 
-	if (bma->flags & XFS_BMAPI_ZERO) {
-		error = xfs_zero_extent(bma->ip, bma->blkno, bma->length);
-		if (error)
-			return error;
-	}
+//	if (bma->flags & XFS_BMAPI_ZERO) {
+//		error = xfs_zero_extent(bma->ip, bma->blkno, bma->length);
+//		if (error)
+//			return error;
+//	}
 
 	if ((ifp->if_flags & XFS_IFBROOT) && !bma->cur)
 		bma->cur = xfs_bmbt_init_cursor(mp, bma->tp, bma->ip, whichfork);

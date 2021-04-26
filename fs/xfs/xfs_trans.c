@@ -143,9 +143,6 @@ xfs_trans_dup(
  * caller afterwards.
  */
 
-long xfs_get_num_pz_blocks(void);
-int xfs_free_num_blocks(xfs_extlen_t len);
-
 static int
 xfs_trans_reserve(
 	struct xfs_trans	*tp,
@@ -165,15 +162,10 @@ xfs_trans_reserve(
 	 * the number needed from the number available.  This will
 	 * fail if the count would go below zero.
 	 */
-repeat:
 	if (blocks > 0) {
 		error = xfs_mod_fdblocks(mp, -((int64_t)blocks), rsvd);
 		if (error != 0) {
 			current_restore_flags_nested(&tp->t_pflags, PF_MEMALLOC_NOFS);
-			if (blocks <= xfs_get_num_pz_blocks() 
-					&& xfs_free_num_blocks(blocks)) 
-				goto repeat;
-			
 			return -ENOSPC;
 		}
 		tp->t_blk_res += blocks;

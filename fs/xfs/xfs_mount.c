@@ -1191,6 +1191,8 @@ xfs_log_sbcount(xfs_mount_t *mp)
  * a large batch count (1024) to minimise global counter updates except when
  * we get near to ENOSPC and we have to be very accurate with our updates.
  */
+long xfs_get_num_pz_blocks(void);
+int xfs_free_num_blocks(xfs_extlen_t len);
 #define XFS_FDBLOCKS_BATCH	1024
 int
 xfs_mod_fdblocks(
@@ -1201,7 +1203,7 @@ xfs_mod_fdblocks(
 	int64_t			lcounter;
 	long long		res_used;
 	s32			batch;
-
+	long 			pz_blks;
 	if (delta > 0) {
 		/*
 		 * If the reserve pool is depleted, put blocks back into it
@@ -1234,7 +1236,8 @@ xfs_mod_fdblocks(
 	 * then make everything serialise as we are real close to
 	 * ENOSPC.
 	 */
-	if (__percpu_counter_compare(&mp->m_fdblocks, 2 * XFS_FDBLOCKS_BATCH,
+	pz_blks = xfs_get_num_pz_blocks();
+	if (__percpu_counter_compare(&mp->m_fdblocks+pz_blks, 2 * XFS_FDBLOCKS_BATCH,
 				     XFS_FDBLOCKS_BATCH) < 0)
 		batch = 1;
 	else
@@ -1246,7 +1249,11 @@ xfs_mod_fdblocks(
 		/* we had space! */
 		return 0;
 	}
-
+	else if(-delta <= xfs_get_num_pz_blocks() &&
+		xfs_free_num_blocks((uint32_t)-delta)) {
+		// Check for ZW list for free space
+		return 0;
+	}
 	/*
 	 * lock up the sb for dipping into reserves before releasing the space
 	 * that took us to ENOSPC.
