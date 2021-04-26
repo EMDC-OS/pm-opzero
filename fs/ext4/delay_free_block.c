@@ -13,7 +13,6 @@ static struct kmem_cache* allocator;
 static struct kmem_cache* ndctl_alloc;
 static struct kmem_cache* ext4_free_data_cachep;
 static spinlock_t fb_list_lock; 
-static spinlock_t tb_lock; 
 static spinlock_t list_lock; 
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
@@ -177,7 +176,6 @@ static int free_blocks(struct free_block_t *entry)
 	unsigned int count_clusters;
 	int err = 0;
 	int ret;
-	unsigned int credits;
 	handle_t *handle = NULL;
 
 	if(!inode)
@@ -529,10 +527,9 @@ static void monitor_media(void)
 		//for now, Uint64_1 would not be needed
 		//Caclculate each of read and write since they do not sum up
 		//together
-		read_bytes = res.MediaReads.Uint64 * 64 < num_freeing_blocks ?
-					read_bytes = 0 :
-					read_bytes = res.MediaReads.Uint64*64
-							- num_freeing_blocks*4096;
+		read_bytes = res.MediaReads.Uint64 * 64 < num_freeing_blocks*4096 ?
+					0 : res.MediaReads.Uint64*64
+						- num_freeing_blocks*4096;
 		if(res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096){
 			write_bytes = 0;
 		} else {
