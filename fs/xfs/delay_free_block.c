@@ -17,7 +17,7 @@ static spinlock_t list_lock;
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
 static unsigned long num_freeing_blocks;
-static long total_blocks;
+static atomic64_t total_blocks;
 static unsigned long read_bytes, write_bytes;
 static int thread_control;
 static int period_control;
@@ -30,6 +30,7 @@ static struct nd_cmd_vendor_tail *tail;
 static int rc;
 static int kt_free_block(void);
 static void monitor_media(void);
+static void flush(void);
 
 static struct kobject *frblk_kobj;
 
@@ -80,30 +81,29 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 	if (frblk->value == 1) {
 		if (was_on == 0) {
 			int i;
-			//for(i = 0; i < 1; i++) {
-				//char dev_name[6];
-				//snprintf(dev_name, 6, "pmem%d", i);
-				//rc = dev_nd_ioctl(dev_name, ND_IOCTL_VENDOR, 
-					//(unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
-				//if(rc) {
-					//printk(KERN_ERR "%s: Error on nd_ioctl(%d)\n", 
-						//__func__, rc);
-				//}
-				//memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
-			//}
-			thread_control = 1;
-			thread = kthread_create((int(*)(void*))kt_free_block,
-					NULL, "kt_free_block");
-			wake_up_process(thread);
-			//thread_monitoring =
-				//kthread_create((int(*)(void*))monitor_media, NULL,
-						//"monitor_media");
-			//wake_up_process(thread_monitoring);
+			for(i = 0; i < 6; i++) {
+				char dev_name[6];
+				snprintf(dev_name, 6, "nmem%d", i);
+				rc = dev_nd_ioctl(dev_name, ND_IOCTL_VENDOR, 
+					(unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
+				if(rc) {
+					printk(KERN_ERR "%s: Error on nd_ioctl(%d)\n", 
+						__func__, rc);
+				}
+				memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
+			}
+			thread_monitoring =
+				kthread_create((int(*)(void*))monitor_media, NULL,
+						"monitor_media");
+			wake_up_process(thread_monitoring);
 		}
 	} 
 	else if (frblk->value == 0) {
 		if (was_on) 
 			thread_control = 0;	
+	}
+	else if (frblk->value == 3) {
+		flush();
 	}
 	return len;
 }
@@ -122,11 +122,7 @@ static struct frblk_attr frblk_notify = {
  * */
 long xfs_get_num_pz_blocks(void)
 {
-	long tmp;
-	spin_lock(&tb_lock);
-	tmp = total_blocks;
-	spin_unlock(&tb_lock);
-	return tmp;
+	return atomic64_read(&total_blocks);
 }
 EXPORT_SYMBOL(xfs_get_num_pz_blocks);
 
@@ -154,9 +150,7 @@ void xfs_delay_free_block(struct xfs_mount *mp, xfs_fsblock_t start_block, xfs_e
 	/* Need the count for number of total blocks in the list
 	 * Should be handled with locks
 	 * */
-	spin_lock(&tb_lock);
-	total_blocks += len;
-	spin_unlock(&tb_lock);
+	atomic64_add(len, &total_blocks);
 }
 EXPORT_SYMBOL(xfs_delay_free_block);
 
@@ -234,16 +228,6 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 	struct free_block_t *entry;
 	int err;
 
-	/* Check if thread is running. If it is, we are really out of free
-	 * blocks. ENOSPC
-	 */
-	/*spin_lock(&tb_lock);*/
-	/*if(thread_control && total_blocks) { */
-		/*spin_unlock(&tb_lock);*/
-		/*return 0;*/
-	/*}*/
-	/*spin_unlock(&tb_lock);*/
-
 	while(len){
 		err = 0;
 		spin_lock(&fb_list_lock);
@@ -267,9 +251,7 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 			spin_unlock(&fb_list_lock);
 
 			err = free_blocks(&partial);
-			spin_lock(&tb_lock);
-			total_blocks -= len;
-			spin_unlock(&tb_lock);
+			atomic64_sub(len, &total_blocks);
 
 			break;
 
@@ -289,10 +271,7 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 			len -= full.len;
 			err = free_blocks(&full);
 			
-			spin_lock(&tb_lock);
-			total_blocks -= full.len;
-			spin_unlock(&tb_lock);
-
+			atomic64_sub(len, &total_blocks);
 			kmem_cache_free(allocator, entry);
 		}
 	}
@@ -308,27 +287,19 @@ static int kt_free_block(void)
 		int err;
 		spin_lock(&fb_list_lock);
 		while (!list_empty(&block_list) && thread_control) {
-			spin_unlock(&fb_list_lock);
 
 			err = 0;
 
-			spin_lock(&fb_list_lock);
 			entry = list_first_entry(&block_list,
 					struct free_block_t, ls);
+			list_del(&entry->ls);
 			spin_unlock(&fb_list_lock);
 
 			num_freeing_blocks += entry->len;
 			err = free_blocks(entry);
-			num_freeing_blocks = 0;
 			num_free_blocks += entry->len;
-
-			spin_lock(&fb_list_lock);
-			list_del(&entry->ls);
-			spin_unlock(&fb_list_lock);
-			
-			spin_lock(&tb_lock);
-			total_blocks -= entry->len;
-			spin_unlock(&tb_lock);
+						
+			atomic64_sub(entry->len, &total_blocks);
 
 			kmem_cache_free(allocator, entry);
 			count_free_blocks++;
@@ -340,6 +311,32 @@ static int kt_free_block(void)
 		msleep(1000);
 	}
 	return 0;
+}
+
+static void flush(void)
+{
+	struct free_block_t *entry;
+	int err;
+	spin_lock(&fb_list_lock);
+	while (!list_empty(&block_list)) {
+		err = 0;
+		entry = list_first_entry(&block_list,
+				struct free_block_t, ls);
+		list_del(&entry -> ls);
+		spin_unlock(&fb_list_lock);
+
+		num_freeing_blocks += entry->len;
+		err = free_blocks(entry);
+		num_free_blocks += entry->len;
+		
+		atomic64_sub(entry->len, &total_blocks);
+		kmem_cache_free(allocator, entry);
+		count_free_blocks++;
+
+		/* This lock is for loop condition check */
+		spin_lock(&fb_list_lock);
+	}
+	spin_unlock(&fb_list_lock);
 }
 
 static void monitor_media(void)
@@ -356,8 +353,8 @@ static void monitor_media(void)
 		res.MediaWrites.Uint64 = 0;
 		res.MediaWrites.Uint64_1 = 0;
 
-		for(i = 0; i < 1; i++) {
-			snprintf(dev_name, 6, "pmem%d", i);
+		for(i = 0; i < 6; i++) {
+			snprintf(dev_name, 6, "nmem%d", i);
 			rc = dev_nd_ioctl(dev_name, ND_IOCTL_VENDOR, 
 				(unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
 			if(rc) 
@@ -392,14 +389,17 @@ static void monitor_media(void)
 		//for now, Uint64_1 would not be needed
 		//Caclculate each of read and write since they do not sum up
 		//together
-		read_bytes = res.MediaReads.Uint64 * 64;
+		read_bytes = res.MediaReads.Uint64 * 64 < num_freeing_blocks ?
+					0 :
+					res.MediaReads.Uint64*64
+						- num_freeing_blocks*4096;
 		if(res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096){
 			write_bytes = 0;
 		} else {
 			write_bytes = res.MediaWrites.Uint64*64 
 					- num_freeing_blocks*4096;
 		}
-
+		num_freeing_blocks = 0;
 		read_bytes /= 1024*1024;
 		write_bytes /= 1024*1024;
 		if( (read_bytes / period_control < 100) && 
@@ -407,9 +407,7 @@ static void monitor_media(void)
 			idle = 1;
 			/* We should wake up free_block thread when idle
 			 * */
-			spin_lock(&tb_lock);
-			if(total_blocks) {
-				spin_unlock(&tb_lock);
+			if(atomic64_read(&total_blocks)) {
 				if(!thread_control) {
 					thread_control = 1;
 					thread = kthread_create((int(*)(void*))kt_free_block,
@@ -443,7 +441,7 @@ static int __init kt_free_block_init(void)
 	count_free_blocks = 0;
 	num_free_blocks = 0;
 	num_freeing_blocks = 0;
-	total_blocks = 0;
+	atomic64_set(&total_blocks, 0);
 	thread_control = 0;
 	period_control = 1;
 	input.MemoryPage = 0x0;
@@ -454,7 +452,6 @@ static int __init kt_free_block_init(void)
 	read_bytes = 0;
 	write_bytes = 0;
 	spin_lock_init(&fb_list_lock);
-	spin_lock_init(&tb_lock);
 	spin_lock_init(&list_lock);
 	INIT_LIST_HEAD(&block_list);
 	allocator = kmem_cache_create("delay_free_block", sizeof(struct
