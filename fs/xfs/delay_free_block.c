@@ -29,6 +29,7 @@ static struct nd_cmd_vendor_tail *tail;
 static dev_t devnum;
 static struct block_device *blkdev;
 static struct super_block *real_super; 
+static int zero_ratio, threshold;
 static int rc;
 static int kt_free_block(void);
 static void monitor_media(void);
@@ -63,11 +64,13 @@ static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 					"Thread running: %d\n"
 					"MediaReads_0: %lu\n"
 					"MediaWrites_0: %lu\n"
-					"RC: %d\n", 
+					"RC: %d\n"
+					"Zero Ratio: %d\n"
+					"Threshold: %d\n", 
 			count_free_blocks, num_free_blocks, 
 			num_freeing_blocks, thread_control,
 			read_bytes/period_control, write_bytes/period_control,
-			rc);
+			rc, zero_ratio, threshold);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -346,21 +349,15 @@ static void flush(void)
 	spin_unlock(&fb_list_lock);
 }
 
-dev_t makedev(unsigned int major, unsigned int minor)
-{
-	return ((major & 0xfff) << 8) | (minor & 0xff);
-}
-
 static void monitor_media(void)
 {
 	// Get superblock from dev num
 	struct xfs_mount *mp;
 	uint64_t zblocks;
-	devnum = makedev(259,1);
+	devnum = ((259 & 0xfff) << 20) | (1 & 0xff);
 	blkdev = bdget(devnum);
-	ASSERT(blkdev);
-	real_super = get_super(blkdev);
-	ASSERT(real_super);
+	real_super = get_active_super(blkdev);
+	mp = XFS_M(real_super);
 	zblocks = atomic64_read(&total_blocks);
 	msleep(1000);
 	while(1) {
@@ -369,7 +366,6 @@ static void monitor_media(void)
 		char dev_name[6];
 		uint64_t fdblocks;
 		uint64_t pz_blocks;
-		int zero_ratio, threshold;
 //		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
@@ -422,16 +418,15 @@ static void monitor_media(void)
 					- num_freeing_blocks*4096;
 		}
 		num_freeing_blocks = 0;
-		mp = XFS_M(real_super);
+
 		fdblocks = percpu_counter_sum(&mp->m_fdblocks);
 		pz_blocks = (uint64_t)atomic64_read(&total_blocks);
 		zero_ratio = 100 * pz_blocks / ( fdblocks + pz_blocks );
 		if (pz_blocks - zblocks > 0)
-			threshold = 100 * write_bytes / ((pz_blocks - zblocks)*4096);
+			threshold = min(100 * write_bytes / ((pz_blocks - zblocks)*4096), 99);
 		else
 			goto period_control;
 		zblocks = pz_blocks;
-
 		if(zero_ratio > threshold) {
 			idle = 1;
 			/* We should wake up free_block thread when idle
