@@ -1237,7 +1237,7 @@ xfs_mod_fdblocks(
 	 * ENOSPC.
 	 */
 	pz_blks = xfs_get_num_pz_blocks();
-	if (__percpu_counter_compare(&mp->m_fdblocks+pz_blks, 2 * XFS_FDBLOCKS_BATCH,
+	if (__percpu_counter_compare(&mp->m_fdblocks, 2 * XFS_FDBLOCKS_BATCH-pz_blks,
 				     XFS_FDBLOCKS_BATCH) < 0)
 		batch = 1;
 	else
@@ -1249,7 +1249,7 @@ xfs_mod_fdblocks(
 		/* we had space! */
 		return 0;
 	}
-	else if(-delta <= xfs_get_num_pz_blocks() &&
+	else if(-delta <= pz_blks &&
 		xfs_free_num_blocks((uint32_t)-delta)) {
 		// Check for ZW list for free space
 		return 0;

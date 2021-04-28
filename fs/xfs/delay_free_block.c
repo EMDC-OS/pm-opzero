@@ -12,7 +12,6 @@ static struct list_head block_list;
 static struct kmem_cache* allocator;
 static struct kmem_cache* ndctl_alloc;
 static spinlock_t fb_list_lock; 
-static spinlock_t tb_lock; 
 static spinlock_t list_lock; 
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
@@ -27,6 +26,9 @@ static meminfo res;
 static meminfo init_rw[6];
 static input_info input;
 static struct nd_cmd_vendor_tail *tail;
+static dev_t devnum;
+static struct block_device *blkdev;
+static struct super_block *real_super; 
 static int rc;
 static int kt_free_block(void);
 static void monitor_media(void);
@@ -73,7 +75,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 {
 	struct frblk_attr *frblk = container_of(attr, struct frblk_attr, attr);
 	int was_on = 0;
-	if(frblk->value)
+	if(frblk->value == 1)
 		was_on = 1;
 
 	sscanf(buf, "%d", &frblk->value);
@@ -251,6 +253,9 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 			spin_unlock(&fb_list_lock);
 
 			err = free_blocks(&partial);
+			if(err)
+				printk(KERN_ERR "%s: ERROR on freeing extent\n",
+					__func__);
 			atomic64_sub(len, &total_blocks);
 
 			break;
@@ -270,7 +275,9 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 
 			len -= full.len;
 			err = free_blocks(&full);
-			
+			if(err)
+				printk(KERN_ERR "%s: ERROR on freeing extent\n",
+					__func__);
 			atomic64_sub(len, &total_blocks);
 			kmem_cache_free(allocator, entry);
 		}
@@ -339,14 +346,30 @@ static void flush(void)
 	spin_unlock(&fb_list_lock);
 }
 
+dev_t makedev(unsigned int major, unsigned int minor)
+{
+	return ((major & 0xfff) << 8) | (minor & 0xff);
+}
+
 static void monitor_media(void)
 {
-	msleep(900);
+	// Get superblock from dev num
+	struct xfs_mount *mp;
+	uint64_t zblocks;
+	devnum = makedev(259,1);
+	blkdev = bdget(devnum);
+	ASSERT(blkdev);
+	real_super = get_super(blkdev);
+	ASSERT(real_super);
+	zblocks = atomic64_read(&total_blocks);
+	msleep(1000);
 	while(1) {
 		int i;
 		int idle = 0;
 		char dev_name[6];
-	
+		uint64_t fdblocks;
+		uint64_t pz_blocks;
+		int zero_ratio, threshold;
 //		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
@@ -399,28 +422,32 @@ static void monitor_media(void)
 					- num_freeing_blocks*4096;
 		}
 		num_freeing_blocks = 0;
-		read_bytes /= 1024*1024;
-		write_bytes /= 1024*1024;
-		if( (read_bytes / period_control < 100) && 
-			(write_bytes / period_control < 100) ){
+		mp = XFS_M(real_super);
+		fdblocks = percpu_counter_sum(&mp->m_fdblocks);
+		pz_blocks = (uint64_t)atomic64_read(&total_blocks);
+		zero_ratio = 100 * pz_blocks / ( fdblocks + pz_blocks );
+		if (pz_blocks - zblocks > 0)
+			threshold = 100 * write_bytes / ((pz_blocks - zblocks)*4096);
+		else
+			goto period_control;
+		zblocks = pz_blocks;
+
+		if(zero_ratio > threshold) {
 			idle = 1;
 			/* We should wake up free_block thread when idle
 			 * */
-			if(atomic64_read(&total_blocks)) {
-				if(!thread_control) {
-					thread_control = 1;
-					thread = kthread_create((int(*)(void*))kt_free_block,
-							NULL, "kt_free_block");
-					wake_up_process(thread);
-				}
-			} else {
-				spin_unlock(&tb_lock);
-				thread_control = 0;
+			if(!thread_control) {
+				thread_control = 1;
+				thread = kthread_create((int(*)(void*))kt_free_block,
+						NULL, "kt_free_block");
+				wake_up_process(thread);
 			}
 		}
 		else {
 			thread_control = 0;
 		}
+
+period_control:
 		//Period controller, when idle -1 second for each time at max of
 		//10. +1 for non-idle time
 		period_control = idle ? period_control-1 : period_control+1;
