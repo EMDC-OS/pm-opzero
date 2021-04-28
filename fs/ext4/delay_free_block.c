@@ -27,6 +27,10 @@ static meminfo res;
 static meminfo init_rw[6];
 static input_info input;
 static struct nd_cmd_vendor_tail *tail;
+static dev_t devnum;
+static struct block_device *blkdev;
+static struct super_block *real_super;
+static int zero_ratio, threshold;
 static int rc;
 static int kt_free_block(void);
 static void monitor_media(void);
@@ -61,11 +65,13 @@ static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 					"Thread running: %d\n"
 					"MediaReads_0: %lu\n"
 					"MediaWrites_0: %lu\n"
-					"RC: %d\n", 
+					"RC: %d\n"
+					"Zero Ratio: %d\n"
+					"Threshold: %d\n", 
 			count_free_blocks, num_free_blocks, 
 			num_freeing_blocks, thread_control,
 			read_bytes/period_control, write_bytes/period_control,
-			rc);
+			rc, zero_ratio, threshold);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -484,13 +490,20 @@ static void flush(void)
 
 static void monitor_media(void)
 {
-	msleep(900);
+	struct ext4_sb_info *sbi;
+	uint64_t zblocks;
+	devnum = ((259 & 0xfff) << 20) | (1 & 0xff);
+	blkdev = bdget(devnum);
+	real_super = get_active_super(blkdev);
+	sbi = EXT4_SB(real_super);
+	zblocks = atomic64_read(&total_blocks);
+	msleep(1000);
 	while(1) {
 		int i;
 		int idle = 0;
 		char dev_name[6];
-	
-//		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
+		u64 bfree, pz_blocks;
+
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
 		res.MediaWrites.Uint64 = 0;
@@ -537,27 +550,33 @@ static void monitor_media(void)
 					- num_freeing_blocks*4096;
 		}
 		num_freeing_blocks = 0;
-		read_bytes /= 1024*1024;
-		write_bytes /= 1024*1024;
-		if( (read_bytes / period_control < 100) && 
-			(write_bytes / period_control < 100) ){
+		
+		bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
+			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
+		pz_blocks = (u64) atomic64_read(&total_blocks);
+		zero_ratio = 100 * pz_blocks / ( bfree + pz_blocks );
+		if (pz_blocks - zblocks > 0)
+			threshold = 100 * write_bytes / ((pz_blocks - zblocks)*4096);
+		else 
+			goto period_control;
+		zblocks = pz_blocks;
+
+		if(zero_ratio > threshold  ){
 			idle = 1;
 			/* We should wake up free_block thread when idle
 			 * */
-			if(atomic64_read(&total_blocks)) {
-				if(!thread_control) {
-					thread_control = 1;
-					thread = kthread_create((int(*)(void*))kt_free_block,
-							NULL, "kt_free_block");
-					wake_up_process(thread);
-				}
-			} else {
-				thread_control = 0;
+			if(!thread_control) {
+				thread_control = 1;
+				thread = kthread_create((int(*)(void*))kt_free_block,
+						NULL, "kt_free_block");
+				wake_up_process(thread);
 			}
 		}
 		else {
 			thread_control = 0;
 		}
+
+period_control:
 		//Period controller, when idle -1 second for each time at max of
 		//10. +1 for non-idle time
 		period_control = idle ? period_control-1 : period_control+1;
