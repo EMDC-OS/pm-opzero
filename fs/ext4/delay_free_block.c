@@ -550,20 +550,24 @@ static void monitor_media(void)
 					- num_freeing_blocks*4096;
 		}
 		num_freeing_blocks = 0;
-		
+		if (read_bytes <= 10*1024*1024 && write_bytes <= 10*1024*1024)
+			idle = 1;
+
 		bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
 			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
 		pz_blocks = (u64) atomic64_read(&total_blocks);
 		zero_ratio = 100 * pz_blocks / ( bfree + pz_blocks );
-		if (pz_blocks - zblocks > 0)
-			threshold = 100 * write_bytes / ((pz_blocks - zblocks)*4096);
-		else 
+		if (pz_blocks - zblocks > 0) {
+			threshold = min(100 * write_bytes / ((pz_blocks - zblocks)*4096), 
+					(uint64_t)99);
+		} else {
 			goto period_control;
+		}
 		zblocks = pz_blocks;
 
-		if(zero_ratio > threshold  ){
-			idle = 1;
+		if(zero_ratio > threshold || idle ) {
 			/* We should wake up free_block thread when idle
+			 * and disk gets near full
 			 * */
 			if(!thread_control) {
 				thread_control = 1;
