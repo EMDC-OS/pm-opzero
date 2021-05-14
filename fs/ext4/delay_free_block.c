@@ -567,11 +567,9 @@ static void monitor_media(void)
 					- num_freeing_blocks*4096;
 		}
 		num_freeing_blocks = 0;
-	
 		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
 		
 		zio = 8000 - read_write;
-		
 		bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
 			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
 		pz_blocks = (u64) atomic64_read(&total_blocks);
@@ -618,7 +616,6 @@ static void monitor_media(void)
 		if(zero_ratio > threshold || idle ) {
 			 //We should wake up free_block thread when idle
 			 // and disk gets near full
-			 
 			if(!thread_control) {
 				thread_control = 1;
 				thread = kthread_create((int(*)(void*))kt_free_block,
