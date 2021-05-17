@@ -418,6 +418,8 @@ static void monitor_media(void)
 					- num_freeing_blocks*4096;
 		}
 		num_freeing_blocks = 0;
+		if (read_bytes <= 10*1024*1024 && write_bytes <= 10*1024*1024)
+			idle = 1;
 
 		fdblocks = percpu_counter_sum(&mp->m_fdblocks);
 		pz_blocks = (uint64_t)atomic64_read(&total_blocks);
@@ -427,8 +429,7 @@ static void monitor_media(void)
 		else
 			goto period_control;
 		zblocks = pz_blocks;
-		if(zero_ratio > threshold) {
-			idle = 1;
+		if(zero_ratio > threshold || idle) {
 			/* We should wake up free_block thread when idle
 			 * */
 			if(!thread_control) {
