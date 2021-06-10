@@ -199,10 +199,11 @@ static int free_blocks(struct free_block_t *entry)
 		return error;
 	}
 
-	dax_iomap.addr = entry->start_block << (sp->s_blocksize_bits);
-	dax_iomap.offset = 0;
+	dax_iomap.addr = BBTOB(XFS_FSB_TO_DADDR(mp, entry->start_block));
+	dax_iomap.length = XFS_FSB_TO_B(mp, entry->len);
 	dax_iomap.bdev = sp->s_bdev;
 	dax_iomap.dax_dev = fs_dax_get_by_bdev(sp->s_bdev);
+
 	written = xfs_iomap_dax_zero_range(0, sp->s_blocksize * entry->len, 
 			&dax_iomap);
 
@@ -426,10 +427,12 @@ static void monitor_media(void)
 		zero_ratio = 100 * pz_blocks / ( fdblocks + pz_blocks );
 		if (pz_blocks - zblocks > 0)
 			threshold = min(100 * write_bytes / ((pz_blocks - zblocks)*4096), 99);
+		else if (idle)
+			threshold = 0;
 		else
 			goto period_control;
 		zblocks = pz_blocks;
-		if(zero_ratio > threshold || idle) {
+		if(zero_ratio > threshold) {
 			/* We should wake up free_block thread when idle
 			 * */
 			if(!thread_control) {
