@@ -480,7 +480,6 @@ static void flush(void)
 		kmem_cache_free(allocator, entry);
 		count_free_blocks++;
 
-		/* This lock is for loop condition check */
 		spin_lock(&fb_list_lock);
 	}
 	spin_unlock(&fb_list_lock);
