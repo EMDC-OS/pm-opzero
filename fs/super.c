@@ -854,6 +854,8 @@ struct super_block *get_active_super(struct block_device *bdev)
 restart:
 	spin_lock(&sb_lock);
 	list_for_each_entry(sb, &super_blocks, s_list) {
+		printk(KERN_ERR "%s: id(%s), bdevp(%p), dev(%u)\n",
+			__func__, sb->s_id, sb->s_bdev, sb->s_dev);
 		if (hlist_unhashed(&sb->s_instances))
 			continue;
 		if (sb->s_bdev == bdev) {
