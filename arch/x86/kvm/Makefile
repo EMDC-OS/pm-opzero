@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
-
+KASAN_SANITIZE := n
 ccflags-y += -Iarch/x86/kvm
 ccflags-$(CONFIG_KVM_WERROR) += -Werror
 
