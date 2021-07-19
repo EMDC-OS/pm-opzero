@@ -543,6 +543,7 @@ static void monitor_media(void)
 				0 : res.MediaWrites.Uint64*64 
 					- num_freeing_blocks * 4096;
 		num_freeing_blocks = 0;
+	
 		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
 		
 		zio = 8000 - read_write;
