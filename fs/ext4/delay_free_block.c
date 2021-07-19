@@ -20,7 +20,6 @@ static atomic64_t total_blocks;
 static unsigned long read_bytes, write_bytes;
 static unsigned long zspeed;
 static int thread_control;
-static int period_control;
 static struct ndctl_cmd *pcmd;
 static meminfo output[6];
 static meminfo res;
@@ -60,19 +59,13 @@ static struct attribute_group frblk_group = {
 static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 		char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "Number of called blocks: %lu\n" 
-					"Number of free blocks: %lu\n"
-					"Number of freeing blocks: %lu\n"
-					"Thread running: %d\n"
-					"MediaReads_0: %lu\n"
+	return scnprintf(buf, PAGE_SIZE,"MediaReads_0: %lu\n"
 					"MediaWrites_0: %lu\n"
 					"RC: %d\n"
 					"Zero Ratio: %d\n"
-					"Threshold: %d\n", 
-			count_free_blocks, num_free_blocks, 
-			num_freeing_blocks, thread_control,
-			read_bytes/period_control, write_bytes/period_control,
-			rc, zero_ratio, threshold);
+					"Zero_speed: %lu",
+			read_bytes, write_bytes,
+			rc, zero_ratio, zspeed);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -140,15 +133,11 @@ long get_num_pz_blocks(void)
 EXPORT_SYMBOL(get_num_pz_blocks);
 
 /* ext4_delay_free_block
- * Delay the call for ext4_free_block
+ * Store freeing blocks in to the list
  */
 void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block, 
 		unsigned long count, int flag)
 {
-	/* 
-	 * Here we need to put the information into the list.
-	 * Need to use kmem_cache_alloc
-	 * */
 	struct free_block_t *new = kmem_cache_alloc(allocator, GFP_KERNEL);
 	if(new) {
 		new -> inode = inode;
@@ -160,9 +149,7 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 	spin_lock(&fb_list_lock);
 	list_add_tail(&new -> ls, &block_list);
 	spin_unlock(&fb_list_lock);
-	/* Need the count for number of total blocks in the list
-	 * Should be handled with locks
-	 * */
+
 	atomic64_add(count, &total_blocks);
 }
 EXPORT_SYMBOL(ext4_delay_free_block);
@@ -191,8 +178,6 @@ static int free_blocks(struct free_block_t *entry)
 	int ret;
 	handle_t *handle = NULL;
 
-	if(!inode)
-		return 1;
 do_more:
 	overflow = 0;
 	ext4_get_group_no_and_offset(sb, block, &block_group,
@@ -368,7 +353,6 @@ int ext4_free_num_blocks(long count)
 	struct free_block_t *entry;
 	int err;
 
-
 	while(count){
 		err = 0;
 //		printk(KERN_ERR "%s: in lock\n", __func__);
@@ -391,7 +375,6 @@ int ext4_free_num_blocks(long count)
 			err = free_blocks(tmp_entry);
 			atomic64_sub(count, &total_blocks);
 
-//			printk(KERN_ERR "%s: out lock\n", __func__);
 			break;
 
 		} else { // Free this entry and subtract the amount from count
@@ -408,7 +391,6 @@ int ext4_free_num_blocks(long count)
 
 			kmem_cache_free(allocator, entry);
 		}
-//		printk(KERN_ERR "%s: out lock\n", __func__);
 	}
 	return 1;
 }
@@ -494,7 +476,6 @@ static void flush(void)
 		kmem_cache_free(allocator, entry);
 		count_free_blocks++;
 
-		/* This lock is for loop condition check */
 		spin_lock(&fb_list_lock);
 	}
 	spin_unlock(&fb_list_lock);
@@ -508,13 +489,13 @@ static void monitor_media(void)
 	uint64_t zblocks;
 	devnum = ((259 & 0xfff) << 20) | (1 & 0xff) - 1;
 	blkdev = bdget(devnum);
-	printk(KERN_ERR "devnum: %u\n"
-			"blkdev: %p\n",
-			devnum, blkdev);
 	real_super = get_active_super(blkdev);
+	if(!real_super) {
+		printk(KERN_ERR "%s: Super block NULL pointer\n", __func__);
+		return;
+	}
 	sbi = EXT4_SB(real_super);
 	zblocks = atomic64_read(&total_blocks);
-	msleep(1000);
 	while(1) {
 		int i;
 		//int idle = 0;
@@ -550,22 +531,14 @@ static void monitor_media(void)
 		/* Calculate the current speed of read and write
 		 * Also needs to store before, current and take good care of
 		 * number of freed amount of zeroed blocks with current I/O
-		 * speed - how?
+		 * speed 
 		 * */
-		//Total reads = res.MediaReads.Uint64 * 64 bytes, total writes =
-		//res.MediaWrites.Uint64 * 64 bytes
-		//for now, Uint64_1 would not be needed
-		//Caclculate each of read and write since they do not sum up
-		//together
 		read_bytes = res.MediaReads.Uint64 * 64 < num_freeing_blocks*4096 ?
-					0 : res.MediaReads.Uint64*64
-						- num_freeing_blocks*4096;
-		if(res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096){
-			write_bytes = 0;
-		} else {
-			write_bytes = res.MediaWrites.Uint64*64 
-					- num_freeing_blocks*4096;
-		}
+				0 : res.MediaReads.Uint64 * 64
+					- num_freeing_blocks * 4096;
+		write_bytes = res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096 ?
+				0 : res.MediaWrites.Uint64*64 
+					- num_freeing_blocks * 4096;
 		num_freeing_blocks = 0;
 	
 		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
@@ -614,6 +587,7 @@ static void monitor_media(void)
 			goto period_control;
 		}
 		zblocks = pz_blocks;
+	
 
 		if(zero_ratio > threshold || idle ) {
 			 //We should wake up free_block thread when idle
@@ -653,7 +627,6 @@ static int __init kt_free_block_init(void)
 	num_freeing_blocks = 0;
 	atomic64_set(&total_blocks, 0);
 	thread_control = 0;
-	period_control = 1;
 	input.MemoryPage = 0x0;
 	res.MediaReads.Uint64 = 0;
 	res.MediaReads.Uint64_1 = 0;
@@ -666,7 +639,7 @@ static int __init kt_free_block_init(void)
 	INIT_LIST_HEAD(&block_list);
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,
 			SLAB_RECLAIM_ACCOUNT);
-	allocator = kmem_cache_create("delay_free_block", sizeof(struct
+	allocator = kmem_cache_create("zero_waiting_block_list", sizeof(struct
 				free_block_t), 0, 0, NULL);
 	if(allocator == NULL) {
 		printk(KERN_ERR "Kmem_cache create failed!!!!\n");

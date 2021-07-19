@@ -3904,7 +3904,7 @@ exit2:
 		else {
 			iput_zero(inode);
 		}
-		inode = NULL;
+		//inode = NULL;
 	}
 	if (delegated_inode) {
 		error = break_deleg_wait(&delegated_inode);
