@@ -61,11 +61,10 @@ static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 {
 	return scnprintf(buf, PAGE_SIZE,"MediaReads_0: %lu\n"
 					"MediaWrites_0: %lu\n"
-					"RC: %d\n"
 					"Zero Ratio: %d\n"
-					"Zero_speed: %lu",
-			read_bytes, write_bytes,
-			rc, zero_ratio, zspeed);
+					"Zero_speed: %lu\n",
+			read_bytes/(1<<20), write_bytes/(1<<20),
+			zero_ratio, zspeed);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -81,7 +80,6 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 	if (frblk->value == 1) {
 		if (was_on == 0) {
 			int i;
-		//	struct inode * asdf = 0x0000000080550038;
 			for(i = 0; i < 6; i++) {
 				char dev_name[6];
 				snprintf(dev_name, 6, "nmem%d", i);
@@ -93,7 +91,6 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 				}
 				memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
 			}
-		//	ext4_delay_free_block(asdf, 1000, 10000, 0);
 			thread_monitoring =
 				kthread_create((int(*)(void*))monitor_media, NULL,
 						"monitor_media");
@@ -545,8 +542,9 @@ static void monitor_media(void)
 		num_freeing_blocks = 0;
 	
 		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
-		
-		zio = 8000 - read_write;
+		if (read_write >= 8000)
+			read_write = 8000;
+		zio = min(8000 - read_write, 4000);
 		bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
 			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
 		pz_blocks = (u64) atomic64_read(&total_blocks);
