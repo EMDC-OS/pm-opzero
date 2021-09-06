@@ -27,8 +27,10 @@ static meminfo init_rw[6];
 static input_info input;
 static struct nd_cmd_vendor_tail *tail;
 static dev_t devnum;
+struct block_device *blkdev;
+struct super_block *real_super;
 static struct free_block_t *tmp_entry;
-static int zero_ratio, threshold;
+static int zero_ratio;
 static int rc;
 static int kt_free_block(void);
 static void monitor_media(void);
@@ -91,6 +93,10 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 				}
 				memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
 			}
+			devnum = ((259 & 0xfff) << 20) | (1 & 0xff) - 1;
+			blkdev = bdget(devnum);
+			real_super = get_active_super(blkdev);
+
 			thread_monitoring =
 				kthread_create((int(*)(void*))monitor_media, NULL,
 						"monitor_media");
@@ -98,7 +104,6 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 			thread = kthread_create((int(*)(void*))kt_free_block,
 					NULL, "kt_free_block");
 			wake_up_process(thread);
-
 		}
 	} 
 	else if (frblk->value == 0) {
@@ -151,6 +156,30 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 }
 EXPORT_SYMBOL(ext4_delay_free_block);
 
+static inline loff_t 
+ext4_iomap_dax_zero_range(loff_t pos, loff_t count, struct iomap *iomap)
+{
+	loff_t written = 0;
+	int status;
+
+	do {
+		unsigned offset, bytes;
+
+		offset = offset_in_page(pos);
+		bytes = min_t(loff_t, PAGE_SIZE - offset, count);
+
+		status = dax_iomap_zero(pos, offset, bytes, iomap);
+		if (status < 0)
+			return status;
+
+		pos += bytes;
+		count -= bytes;
+		written += bytes;
+	} while (count > 0);
+
+	return written;
+}
+
 /* We need to free blocks in the list one by one
  * Need to clear the block bitmap, zeroout the blocks we
  * have, and change the associated group descriptor
@@ -162,7 +191,7 @@ static int free_blocks(struct free_block_t *entry)
 	unsigned long count = entry -> count;
 	int flags = entry -> flag;
 	unsigned int overflow;
-	struct super_block *sb = inode -> i_sb; 
+	struct super_block *sb = real_super; 
 	struct ext4_group_desc *gdp;
 	ext4_grpblk_t bit;
 	ext4_group_t block_group;
@@ -173,6 +202,8 @@ static int free_blocks(struct free_block_t *entry)
 	unsigned int count_clusters;
 	int err = 0;
 	int ret;
+	struct iomap dax_iomap;
+	loff_t written = 0;
 	handle_t *handle = NULL;
 
 do_more:
@@ -219,19 +250,14 @@ do_more:
 
 	/* Modified for zeroout data blocks while trucate for dax
 	 * */
-	if (IS_DAX(inode)) {
-		/* use iomap_zero_range need to find from and length */
-		struct iomap dax_iomap, srcmap;
-		loff_t written = 0;
-		dax_iomap.addr = block << inode->i_blkbits;
-		dax_iomap.offset = 0;
-		dax_iomap.bdev = inode -> i_sb -> s_bdev;
-		dax_iomap.dax_dev = EXT4_SB(inode -> i_sb)->s_daxdev;
-		srcmap.type = 2;
-		written = iomap_zero_range_actor(inode, 0, 
-					inode->i_sb->s_blocksize*count, 
-					NULL, &dax_iomap, &srcmap);
-	}
+	/* use iomap_zero_range need to find from and length */
+	dax_iomap.addr = block << inode->i_blkbits;
+	dax_iomap.offset = 0;
+	dax_iomap.length = real_super->s_blocksize * count; 
+	dax_iomap.bdev = blkdev;
+	dax_iomap.dax_dev = fs_dax_get_by_bdev(blkdev);
+	written = ext4_iomap_dax_zero_range(0, dax_iomap.length, 
+				&dax_iomap);
 
 	/* New handle for journaling
 	 * */
@@ -399,7 +425,7 @@ static int kt_free_block(void)
 		if((long)atomic64_read(&total_blocks) >= 10000) {
 			ext4_free_num_blocks(10000);
 			num_freeing_blocks += 10000;
-			if(zspeed >= 40)
+			if(zspeed > 40)
 				msleep(1000/(zspeed/40)-1);
 		} else {
 			msleep(10000);
@@ -480,20 +506,8 @@ static void flush(void)
 
 static void monitor_media(void)
 {
-	struct block_device *blkdev;
-	struct super_block *real_super;
 	struct ext4_sb_info *sbi;
 	uint64_t zblocks;
-	devnum = ((259 & 0xfff) << 20) | (1 & 0xff) - 1;
-	blkdev = bdget(devnum);
-	printk(KERN_ERR "devnum: %u\n"
-			"blkdev: %p\n",
-			devnum, blkdev);
-	real_super = get_active_super(blkdev);
-	if(!real_super) {
-		printk(KERN_ERR "%s: Super block NULL pointer\n", __func__);
-		return;
-	}
 	sbi = EXT4_SB(real_super);
 	zblocks = atomic64_read(&total_blocks);
 	while(1) {
@@ -544,7 +558,7 @@ static void monitor_media(void)
 		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
 		if (read_write >= 8000)
 			read_write = 8000;
-		zio = min(8000 - read_write, 4000);
+		zio = min_t(u64, 8000 - read_write, 4000);
 		bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
 			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
 		pz_blocks = (u64) atomic64_read(&total_blocks);
@@ -595,6 +609,7 @@ static int __init kt_free_block_init(void)
 	zspeed = 1;
 	spin_lock_init(&fb_list_lock);
 	INIT_LIST_HEAD(&block_list);
+	
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,
 			SLAB_RECLAIM_ACCOUNT);
 	allocator = kmem_cache_create("zero_waiting_block_list", sizeof(struct

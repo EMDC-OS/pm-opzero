@@ -1006,7 +1006,6 @@ static void ext4_put_super(struct super_block *sb)
 	struct flex_groups **flex_groups;
 	int aborted = 0;
 	int i, err;
-
 	ext4_unregister_li_request(sb);
 	ext4_quota_off_umount(sb);
 

@@ -39,7 +39,6 @@ inline int ext4_issue_discard(struct super_block *sb,
 noinline_for_stack int ext4_mb_free_metadata(handle_t *handle,
 		struct ext4_buddy *e4b, struct ext4_free_data *new_entry);
 
-
 typedef struct {
 	uint64_t Uint64;
 	uint64_t Uint64_1;
