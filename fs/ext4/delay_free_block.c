@@ -93,7 +93,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 				}
 				memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
 			}
-			devnum = ((259 & 0xfff) << 20) | (1 & 0xff) - 1;
+			devnum = ((259 & 0xfff) << 20) | (1 & 0xff);
 			blkdev = bdget(devnum);
 			real_super = get_active_super(blkdev);
 
