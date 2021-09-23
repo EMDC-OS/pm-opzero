@@ -109,7 +109,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 			thread_control = 0;	
 	}
 	else if (frblk->value == 3) {
-		devnum = ((259 & 0xfff) << 20) | (1 & 0xff) + 1;
+		devnum = ((259 & 0xfff) << 20) | (1 & 0xff) + 1 ;
 		blkdev = bdget(devnum);
 		flush();
 	}
