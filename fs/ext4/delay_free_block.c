@@ -4,6 +4,7 @@
  * */
 
 #include "delay_free_block_test.h"
+#include "linux/fs.h"
 
 
 static struct task_struct *thread;
@@ -26,7 +27,7 @@ static meminfo res;
 static meminfo init_rw[6];
 static input_info input;
 static struct nd_cmd_vendor_tail *tail;
-static dev_t devnum;
+static char *blkdev_name;
 struct block_device *blkdev;
 struct super_block *real_super;
 static struct free_block_t *tmp_entry;
@@ -35,6 +36,7 @@ static int rc;
 static int kt_free_block(void);
 static void monitor_media(void);
 static void flush(void);
+static int was_on = 0;
 void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block, 
 		unsigned long count, int flag);
 
@@ -47,10 +49,12 @@ struct frblk_attr{
 
 static struct frblk_attr frblk_value;
 static struct frblk_attr frblk_notify;
+static struct frblk_attr target_blkdev;
 
 static struct attribute *frblk_attrs[] = {
 	&frblk_value.attr.attr,
 	&frblk_notify.attr.attr,
+	&target_blkdev.attr.attr,
 	NULL
 };
 
@@ -73,9 +77,6 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 		const char *buf, size_t len)
 {
 	struct frblk_attr *frblk = container_of(attr, struct frblk_attr, attr);
-	int was_on = 0;
-	if(frblk->value)
-		was_on = 1;
 
 	sscanf(buf, "%d", &frblk->value);
 	sysfs_notify(frblk_kobj, NULL, "frblk_notify");
@@ -93,26 +94,42 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 				}
 				memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
 			}
-			devnum = ((259 & 0xfff) << 20) | (1 & 0xff);
-			blkdev = bdget(devnum);
+			//devnum = ((259 & 0xfff) << 20) | (1 & 0xff);
+			blkdev = lookup_bdev(blkdev_name);
+                        if (!blkdev) {
+                                printk(KERN_ERR "No block device\n");
+                                goto out;
+                        }
 			real_super = get_active_super(blkdev);
+                        if (!real_super) {
+                                printk(KERN_ERR "No super block for blkdev\n");
+                                goto out;
+                        }
 
 			thread_monitoring =
 				kthread_create((int(*)(void*))monitor_media, NULL,
 						"monitor_media");
-			wake_up_process(thread_monitoring);
 			thread = kthread_create((int(*)(void*))kt_free_block,
 					NULL, "kt_free_block");
+                        was_on = 1;
+			wake_up_process(thread_monitoring);
 			wake_up_process(thread);
 		}
 	} 
 	else if (frblk->value == 0) {
-		if (was_on) 
+		if (was_on) {
+                        deactivate_super(real_super);
+                        blkdev = NULL;
+                        real_super = NULL;
 			thread_control = 0;	
+                        was_on = 0;
+                        flush();
+                }
 	}
 	else if (frblk->value == 3) {
 		flush();
 	}
+out:
 	return len;
 }
 
@@ -123,6 +140,24 @@ static struct frblk_attr frblk_value = {
 
 static struct frblk_attr frblk_notify = {
 	.attr = __ATTR(frblk_notify, 0644, frblk_show, frblk_store),
+	.value = 0,
+};
+
+static ssize_t blkdevname_show(struct kobject *kobj, struct kobj_attribute *attr,
+		char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%s\n", blkdev_name);
+}
+
+static ssize_t blkdevname_store(struct kobject *kobj, struct kobj_attribute *attr,
+		const char *buf, size_t len)
+{
+	sscanf(buf, "%s", blkdev_name);
+        return len;
+}
+
+static struct frblk_attr target_blkdev = {
+	.attr = __ATTR(target_blkdev, 0644, blkdevname_show, blkdevname_store),
 	.value = 0,
 };
 
@@ -421,7 +456,7 @@ EXPORT_SYMBOL(ext4_free_num_blocks);
 
 static int kt_free_block(void)
 {
-	while(1) {
+	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
 			ext4_free_num_blocks(10000);
 			num_freeing_blocks += 10000;
@@ -510,7 +545,7 @@ static void monitor_media(void)
 	uint64_t zblocks;
 	sbi = EXT4_SB(real_super);
 	zblocks = atomic64_read(&total_blocks);
-	while(1) {
+	while(was_on) {
 		int i;
 		//int idle = 0;
 		char dev_name[6];
@@ -618,6 +653,12 @@ static int __init kt_free_block_init(void)
 		printk(KERN_ERR "Kmem_cache create failed!!!!\n");
 		return -1;
 	}
+        blkdev_name = kmalloc(30, GFP_KERNEL);
+        if (!blkdev_name) {
+		printk(KERN_ERR "kmalloc for dev name failed!!!!\n");
+		return -1;
+        }
+        strncpy(blkdev_name, "/dev/pmem0", 10);
 	tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
 
 	frblk_kobj = kobject_create_and_add("free_block", NULL);
@@ -652,6 +693,7 @@ static void __exit kt_free_block_cleanup(void)
 	kmem_cache_free(ndctl_alloc, pcmd);
 	kmem_cache_free(allocator, tmp_entry);
 	kmem_cache_shrink(ext4_free_data_cachep);
+        kfree(blkdev_name);
 	kmem_cache_shrink(allocator);
 	kmem_cache_shrink(ndctl_alloc);
 }
