@@ -118,12 +118,12 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 	} 
 	else if (frblk->value == 0) {
 		if (was_on) {
-                        deactivate_super(real_super);
+                        flush();
+			deactivate_super(real_super);
                         blkdev = NULL;
                         real_super = NULL;
 			thread_control = 0;	
                         was_on = 0;
-                        flush();
                 }
 	}
 	else if (frblk->value == 3) {
