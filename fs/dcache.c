@@ -370,8 +370,12 @@ static void dentry_unlink_inode(struct dentry * dentry)
 		fsnotify_inoderemove(inode);
 	if (dentry->d_op && dentry->d_op->d_iput)
 		dentry->d_op->d_iput(dentry, inode);
-	else
-		iput(inode);
+	else{
+		if (IS_DAX(inode))
+			iput_zero(inode);
+		else
+			iput(inode);
+	}
 }
 
 /*
