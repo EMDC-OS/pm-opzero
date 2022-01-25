@@ -38,6 +38,7 @@ static int kt_free_block(void);
 static void monitor_media(void);
 static void flush(void);
 static int was_on = 0;
+static int flush_on = 0;
 void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block, 
 		unsigned long count, int flag);
 
@@ -121,12 +122,18 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 		if (was_on) {
 			thread_control = 0;	
                         was_on = 0;
-                        spin_lock(&kt_free_lock);
-                        flush();
-                        spin_unlock(&kt_free_lock);
-                        deactivate_super(real_super);
-                        blkdev = NULL;
-                        real_super = NULL;
+                        //spin_lock(&kt_free_lock);
+                        while(1){
+				if(flush_on){
+					flush();
+                        		//spin_unlock(&kt_free_lock);
+                        		deactivate_super(real_super);
+                        		blkdev = NULL;
+                        		real_super = NULL;
+					flush_on = 0;
+					break;
+				}
+			}
                 }
 	}
 	else if (frblk->value == 3) {
@@ -461,9 +468,9 @@ static int kt_free_block(void)
 {
 	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
-                        spin_lock(&kt_free_lock);
+                        //spin_lock(&kt_free_lock);
 			ext4_free_num_blocks(10000);
-                        spin_unlock(&kt_free_lock);
+                        //spin_unlock(&kt_free_lock);
 			num_freeing_blocks += 10000;
 			if(zspeed > 40)
 				msleep(1000/(zspeed/40)-1);
@@ -471,6 +478,7 @@ static int kt_free_block(void)
 			msleep(10000);
 		}
 	}
+	flush_on = 1;
 	/*
 	while(thread_control) {
 		//
