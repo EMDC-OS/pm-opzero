@@ -14,6 +14,7 @@ static struct kmem_cache* allocator;
 static struct kmem_cache* ndctl_alloc;
 static struct kmem_cache* ext4_free_data_cachep;
 static spinlock_t fb_list_lock; 
+static spinlock_t kt_free_lock; 
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
 static unsigned long num_freeing_blocks;
@@ -118,12 +119,14 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 	} 
 	else if (frblk->value == 0) {
 		if (was_on) {
+			thread_control = 0;	
+                        was_on = 0;
+                        spin_lock(&kt_free_lock);
+                        flush();
+                        spin_unlock(&kt_free_lock);
                         deactivate_super(real_super);
                         blkdev = NULL;
                         real_super = NULL;
-			thread_control = 0;	
-                        was_on = 0;
-                        flush();
                 }
 	}
 	else if (frblk->value == 3) {
@@ -458,7 +461,9 @@ static int kt_free_block(void)
 {
 	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
+                        spin_lock(&kt_free_lock);
 			ext4_free_num_blocks(10000);
+                        spin_unlock(&kt_free_lock);
 			num_freeing_blocks += 10000;
 			if(zspeed > 40)
 				msleep(1000/(zspeed/40)-1);
@@ -643,6 +648,7 @@ static int __init kt_free_block_init(void)
 	write_bytes = 0;
 	zspeed = 1;
 	spin_lock_init(&fb_list_lock);
+	spin_lock_init(&kt_free_lock);
 	INIT_LIST_HEAD(&block_list);
 	
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,
