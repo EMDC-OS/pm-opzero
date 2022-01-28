@@ -121,16 +121,14 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 		if (was_on) {
 			thread_control = 0;	
                         was_on = 0;
-                        //spin_lock(&kt_free_lock);
-			//flush();
-                        //spin_unlock(&kt_free_lock);
-                        		//deactivate_super(real_super);
-                        		//blkdev = NULL;
-                        		//real_super = NULL;
+			flush();
+                        deactivate_super(real_super);
+                        blkdev = NULL;
+                        real_super = NULL;
                 }
 	}
 	else if (frblk->value == 3) {
-		flush();
+		//flush();
 	}
 out:
 	return len;
@@ -178,6 +176,8 @@ EXPORT_SYMBOL(get_num_pz_blocks);
 void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block, 
 		unsigned long count, int flag)
 {
+	
+	spin_lock(&fb_list_lock);
 	struct free_block_t *new = kmem_cache_alloc(allocator, GFP_KERNEL);
 	if(new) {
 		new -> inode = inode;
@@ -186,7 +186,6 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 		new -> count = count;
 	}
 
-	spin_lock(&fb_list_lock);
 	list_add_tail(&new -> ls, &block_list);
 	spin_unlock(&fb_list_lock);
 
@@ -443,14 +442,13 @@ int ext4_free_num_blocks(long count)
 			tmp_entry->block = entry -> block;
 			tmp_entry->count = entry -> count;
 			list_del(&entry -> ls);
+			kmem_cache_free(allocator, entry);
 			spin_unlock(&fb_list_lock);
 
 			count -= tmp_entry->count;
 			err = free_blocks(tmp_entry);
 			
 			atomic64_sub(tmp_entry->count, &total_blocks);
-
-			kmem_cache_free(allocator, entry);
 		}
 	}
 	return 1;
@@ -471,8 +469,9 @@ static int kt_free_block(void)
 			msleep(10000);
 		}
 	}
-        thread_flushing = kthread_create((int(*)(void*))flush, NULL, "flush_thread");
-	wake_up_process(thread_flushing);
+	//flush();
+        //thread_flushing = kthread_create((int(*)(void*))flush, NULL, "flush_thread");
+	//wake_up_process(thread_flushing);
 	/*
 	while(thread_control) {
 		//
@@ -523,11 +522,12 @@ static void flush(void)
 		entry = list_first_entry(&block_list,
 				struct free_block_t, ls);
 		if (entry -> inode == NULL) {
+			printk(KERN_ERR "NULL inode in flush\n");
 			list_del(&entry -> ls);
 			spin_unlock(&fb_list_lock);
 			atomic64_sub(entry-> count, &total_blocks);
-			kmem_cache_free(allocator, entry);
 			spin_lock(&fb_list_lock);
+			kmem_cache_free(allocator, entry);
 			continue;
 		}
 		list_del(&entry -> ls);
@@ -538,16 +538,16 @@ static void flush(void)
 		num_free_blocks += entry->count;
 		
 		atomic64_sub(entry->count, &total_blocks);
-		kmem_cache_free(allocator, entry);
 		count_free_blocks++;
 
 		spin_lock(&fb_list_lock);
+		kmem_cache_free(allocator, entry);
 	}
 	spin_unlock(&fb_list_lock);
 	
-	deactivate_super(real_super);
-	blkdev = NULL;
-        real_super = NULL;
+	//deactivate_super(real_super);
+	//blkdev = NULL;
+        //real_super = NULL;
 }
 
 static void monitor_media(void)
