@@ -457,6 +457,7 @@ EXPORT_SYMBOL(ext4_free_num_blocks);
 
 static int kt_free_block(void)
 {
+/*	
 	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
                         //spin_lock(&kt_free_lock);
@@ -469,10 +470,18 @@ static int kt_free_block(void)
 			msleep(10000);
 		}
 	}
-	//flush();
-        //thread_flushing = kthread_create((int(*)(void*))flush, NULL, "flush_thread");
-	//wake_up_process(thread_flushing);
-	/*
+	*/
+	// without speed control
+	while(was_on) {
+		long cnt = (long)atomic64_read(&total_blocks);
+		if(cnt) {
+			ext4_free_num_blocks(cnt);
+			num_freeing_blocks += cnt;
+		}
+		msleep(1000);
+	}
+	
+/*
 	while(thread_control) {
 		//
 		struct free_block_t *entry;
