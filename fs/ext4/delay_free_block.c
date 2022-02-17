@@ -457,7 +457,7 @@ EXPORT_SYMBOL(ext4_free_num_blocks);
 
 static int kt_free_block(void)
 {
-/*	
+	
 	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
                         //spin_lock(&kt_free_lock);
@@ -470,7 +470,7 @@ static int kt_free_block(void)
 			msleep(10000);
 		}
 	}
-	*/
+	/*
 	// without speed control
 	while(was_on) {
 		long cnt = (long)atomic64_read(&total_blocks);
@@ -480,6 +480,7 @@ static int kt_free_block(void)
 		}
 		msleep(1000);
 	}
+	*/
 	
 /*
 	while(thread_control) {
