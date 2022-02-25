@@ -5,9 +5,15 @@
 
 #include "delay_free_block_test.h"
 #include "linux/fs.h"
-
+//#include "linux/kernel.h"
+//#include "linux/hrtimer.h"
+#include "linux/ktime.h"
 
 static struct task_struct *thread;
+static struct task_struct *thread2;
+static struct task_struct *thread3;
+static struct task_struct *thread4;
+//static struct task_struct *thread5;
 static struct task_struct *thread_monitoring;
 static struct list_head block_list;
 static struct kmem_cache* allocator;
@@ -20,7 +26,8 @@ static unsigned long num_free_blocks;
 static unsigned long num_freeing_blocks;
 static atomic64_t total_blocks;
 static unsigned long read_bytes, write_bytes;
-static unsigned long zspeed;
+//static unsigned long zspeed;
+static long long int zspeed;
 static int thread_control;
 static struct ndctl_cmd *pcmd;
 static meminfo output[6];
@@ -38,6 +45,10 @@ static int kt_free_block(void);
 static void monitor_media(void);
 static void flush(void);
 static int was_on = 0;
+static ktime_t elapsed_time = 0, start_time, end_time;
+static unsigned long zspeed1 = 0, zspeed2 = 0;
+static long long int total_time;
+
 void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block, 
 		unsigned long count, int flag);
 
@@ -112,9 +123,30 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 						"monitor_media");
 			thread = kthread_create((int(*)(void*))kt_free_block,
 					NULL, "kt_free_block");
-                        was_on = 1;
+                        /*
+			thread2 = kthread_create((int(*)(void*))kt_free_block2,
+					NULL, "kt_free_block2");
+
+			
+			thread3 = kthread_create((int(*)(void*))kt_free_block3,
+					NULL, "kt_free_block3");
+			
+			thread4 = kthread_create((int(*)(void*))kt_free_block4,
+					NULL, "kt_free_block4");
+
+			
+			
+			thread5 = kthread_create((int(*)(void*))kt_free_block,
+					NULL, "kt_free_block5");
+			*/
+
+			was_on = 1;
 			wake_up_process(thread_monitoring);
 			wake_up_process(thread);
+			//wake_up_process(thread2);
+			//wake_up_process(thread3);
+			//wake_up_process(thread4);
+			//wake_up_process(thread5);
 		}
 	} 
 	else if (frblk->value == 0) {
@@ -457,7 +489,10 @@ EXPORT_SYMBOL(ext4_free_num_blocks);
 
 static int kt_free_block(void)
 {
-	
+	//ktime_t start_time, end_time;
+	//struct timeval startTime, endTime;
+
+	/*
 	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
                         //spin_lock(&kt_free_lock);
@@ -470,17 +505,24 @@ static int kt_free_block(void)
 			msleep(10000);
 		}
 	}
-	/*
+	*/
 	// without speed control
 	while(was_on) {
-		long cnt = (long)atomic64_read(&total_blocks);
-		if(cnt) {
-			ext4_free_num_blocks(cnt);
-			num_freeing_blocks += cnt;
+		//long cnt = (long)atomic64_read(&total_blocks);
+		if((long)atomic64_read(&total_blocks) >= 10000) {
+			start_time = ktime_get();
+			//gettimeofday(&startTime, NULL);
+			ext4_free_num_blocks(10000);
+			num_freeing_blocks += 10000;
+			//gettimeofday(&endTime, NULL);
+    			//elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
+			end_time = ktime_get();
+			elapsed_time += ktime_sub(end_time, start_time);
+			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
 		}
-		msleep(1000);
+		msleep(1);
 	}
-	*/
+	
 	
 /*
 	while(thread_control) {
@@ -521,6 +563,68 @@ static int kt_free_block(void)
 	}*/
 	return 0;
 }
+
+static unsigned long zspeed2 = 0;
+static int kt_free_block2(void)
+{
+
+	ktime_t start_time, end_time;
+
+	while(was_on) {
+		if((long)atomic64_read(&total_blocks) >= 10000 && zspeed2 != 0) {
+                        //spin_lock(&kt_free_lock);
+			start_time = ktime_get();
+			ext4_free_num_blocks(10000);
+                        //spin_unlock(&kt_free_lock);
+			num_freeing_blocks += 10000;
+			end_time = ktime_get();
+			elapsed_time2 += ktime_sub(end_time, start_time);
+			msleep(1);
+		} else {
+			msleep(1000);
+		}
+	}
+}
+
+
+static int kt_free_block3(void)
+{
+	ktime_t start_time, end_time;
+	while(was_on) {
+		//long cnt = (long)atomic64_read(&total_blocks);
+		if((long)atomic64_read(&total_blocks) >= 10000) {
+			start_time = ktime_get();
+			ext4_free_num_blocks(10000);
+			num_freeing_blocks += 10000;
+			end_time = ktime_get();
+			elapsed_time += ktime_sub(end_time, start_time);
+			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
+		}
+		msleep(1);
+	}
+	return 0;
+}
+
+static int kt_free_block4(void)
+{
+	ktime_t start_time, end_time;
+	while(was_on) {
+		//long cnt = (long)atomic64_read(&total_blocks);
+		if((long)atomic64_read(&total_blocks) >= 10000) {
+			start_time = ktime_get();
+			ext4_free_num_blocks(10000);
+			num_freeing_blocks += 10000;
+			end_time = ktime_get();
+			elapsed_time += ktime_sub(end_time, start_time);
+			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
+		}
+		msleep(1);
+	}
+	return 0;
+}
+
+
+
 
 static void flush(void)
 {
@@ -609,11 +713,39 @@ static void monitor_media(void)
 		write_bytes = res.MediaWrites.Uint64 * 64 < num_freeing_blocks * 4096 ?
 				0 : res.MediaWrites.Uint64*64 
 					- num_freeing_blocks * 4096;
+		
+		zspeed = (num_freeing_blocks*4096)/(1<<20);
+		printk("before zspeed %lu\n", zspeed);
+		// long long int total_time = ktime_to_ns(elapsed_time) + ktime_to_ns(elapsed_time);
+		//long long int total_time = ktime_to_ns(elapsed_time);
+		total_time = elapsed_time;
+		if(total_time > 0){
+			zspeed = zspeed*1000000000/total_time;
+			printk("zspeed and elapsed_time: %lu MB/s %llu ns\n", zspeed, total_time);
+		}
+		else{
+			printk("total time is 0 or negative\n");
+		}
 		num_freeing_blocks = 0;
-	
+		elapsed_time = 0;
+
+		/*
+		if(zspeed > 2000){
+			zspeed1 = zspeed/2;
+			zspeed2 = zspeed - zspeed1;
+		}
+		else{
+			zspeed1 = zspeed;
+			zspeed2 = 0;
+		}
+		*/
+
+
+		/*
 		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
 		if (read_write >= 8000)
 			read_write = 8000;
+		
 		zio = min_t(u64, 8000 - read_write, 4000);
 		bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
 			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
@@ -641,9 +773,27 @@ static void monitor_media(void)
 		else
 			zfree = 3969;
 		zspeed = max(zio, zfree);
+		*/
+	
+		// zspeed = 8000-read_write;
+
 		msleep(1000);
 	}
 }
+
+
+/*
+unsigned long timer_interval_ns = 1e6; 
+static struct hrtimer hr_timer;
+
+enum hrtimer_restart timer_callback(struct hrtimer *timer_for_restart) { 
+	ktime_t currtime, interval; 
+	currtime = ktime_get(); 
+	interval = ktime_set(0, timer_interval_ns); 
+	hrtimer_forward(timer_for_restart, currtime, interval); 
+	return HRTIMER_RESTART; 
+}
+*/
 
 static int __init kt_free_block_init(void) 
 {
@@ -666,6 +816,7 @@ static int __init kt_free_block_init(void)
 	spin_lock_init(&fb_list_lock);
 	spin_lock_init(&kt_free_lock);
 	INIT_LIST_HEAD(&block_list);
+	
 	
 	ext4_free_data_cachep = KMEM_CACHE(ext4_free_data,
 			SLAB_RECLAIM_ACCOUNT);
@@ -706,11 +857,26 @@ static int __init kt_free_block_init(void)
 		(pcmd->cmd_buf + sizeof(struct nd_cmd_vendor_hdr)
 		 + pcmd->vendor->in_length);
 	tail->out_length = (u32) 128;
+
+	
+	/*
+	ktime_t ktime = ktime_set(0, timer_interval_ns); 
+	printk("ktime_get_ns : %llu\n", ktime_get_ns()); 
+	
+	hrtimer_init(&hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL); 
+	hr_timer.function = &timer_callback; 
+	hrtimer_start(&hr_timer, ktime, HRTIMER_MODE_REL);
+	*/
 	return 1;
 }
 
+
 static void __exit kt_free_block_cleanup(void)
 {
+	//int ret = hrtimer_cancel(&hr_timer);
+	//if (ret) printk("The timer was still in use\n");
+
+
 	printk(KERN_INFO "Cleaning up kt_free_block module...\n");
 	kmem_cache_free(ndctl_alloc, pcmd);
 	kmem_cache_free(allocator, tmp_entry);
