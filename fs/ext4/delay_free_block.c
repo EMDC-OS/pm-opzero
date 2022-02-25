@@ -656,7 +656,8 @@ static void flush(void)
 		kmem_cache_free(allocator, entry);
 	}
 	spin_unlock(&fb_list_lock);
-	
+
+	atomic64_set(&total_blocks, 0);
 	//deactivate_super(real_super);
 	//blkdev = NULL;
         //real_super = NULL;
