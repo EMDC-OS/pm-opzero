@@ -9,6 +9,7 @@
 //#include "linux/hrtimer.h"
 #include "linux/ktime.h"
 
+static struct task_struct *threads[4];
 static struct task_struct *thread;
 static struct task_struct *thread2;
 static struct task_struct *thread3;
@@ -26,8 +27,7 @@ static unsigned long num_free_blocks;
 static unsigned long num_freeing_blocks;
 static atomic64_t total_blocks;
 static unsigned long read_bytes, write_bytes;
-//static unsigned long zspeed;
-static long long int zspeed;
+static unsigned long zspeed, zspeed_monitor;
 static int thread_control;
 static struct ndctl_cmd *pcmd;
 static meminfo output[6];
@@ -42,12 +42,17 @@ static struct free_block_t *tmp_entry;
 static int zero_ratio;
 static int rc;
 static int kt_free_block(void);
+static int manipulate_kthread(unsigned int);
 static void monitor_media(void);
 static void flush(void);
 static int was_on = 0;
+static int cur_num_thread = 1;
+static int need_shrink = 0;
 static ktime_t elapsed_time = 0, start_time, end_time;
 static unsigned long zspeed1 = 0, zspeed2 = 0;
-static long long int total_time;
+static unsigned long total_time;
+
+#define TEST
 
 void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block, 
 		unsigned long count, int flag);
@@ -62,11 +67,13 @@ struct frblk_attr{
 static struct frblk_attr frblk_value;
 static struct frblk_attr frblk_notify;
 static struct frblk_attr target_blkdev;
+static struct frblk_attr set_speed;
 
 static struct attribute *frblk_attrs[] = {
 	&frblk_value.attr.attr,
 	&frblk_notify.attr.attr,
 	&target_blkdev.attr.attr,
+	&set_speed.attr.attr,
 	NULL
 };
 
@@ -82,7 +89,7 @@ static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 					"Zero Ratio: %d\n"
 					"Zero_speed: %lu\n",
 			read_bytes/(1<<20), write_bytes/(1<<20),
-			zero_ratio, zspeed);
+			zero_ratio, zspeed_monitor);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -141,6 +148,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 			*/
 
 			was_on = 1;
+			cur_num_thread = 1;
 			wake_up_process(thread_monitoring);
 			wake_up_process(thread);
 			//wake_up_process(thread2);
@@ -194,6 +202,23 @@ static struct frblk_attr target_blkdev = {
 	.value = 0,
 };
 
+static ssize_t set_speed_show(struct kobject *kobj, struct kobj_attribute *attr,
+		char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%lu\n", zspeed);
+}
+
+static ssize_t set_speed_store(struct kobject *kobj, struct kobj_attribute *attr,
+		const char *buf, size_t len)
+{
+	sscanf(buf, "%lu", &zspeed);
+        return len;
+}
+
+static struct frblk_attr set_speed = {
+	.attr = __ATTR(set_speed, 0644, set_speed_show, set_speed_store),
+	.value = 0,
+};
 /* Get total blocks in the free_block list
  * */
 long get_num_pz_blocks(void)
@@ -491,6 +516,8 @@ static int kt_free_block(void)
 {
 	//ktime_t start_time, end_time;
 	//struct timeval startTime, endTime;
+        unsigned long sleep_time;
+        unsigned long th1_zero_time;
 
 	/*
 	while(was_on) {
@@ -518,53 +545,28 @@ static int kt_free_block(void)
     			//elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
 			end_time = ktime_get();
 			elapsed_time += ktime_sub(end_time, start_time);
+                        th1_zero_time = ktime_to_ns(ktime_sub(end_time, start_time));
+                        
 			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
+			if(zspeed > 40) {
+                                sleep_time = 1000000000/((zspeed)/40);
+                                printk(KERN_ERR "sleepTime: %lu, elapsedTime : %lu ns\n", sleep_time, th1_zero_time);
+                                if (sleep_time > th1_zero_time) {
+                                  msleep((sleep_time - th1_zero_time)/1000000);
+                                  need_shrink = 1;
+                                }
+                                else {
+                                  need_shrink = 0;
+                                }
+                        }
 		}
-		msleep(1);
+                if (kthread_should_stop())
+                  return 0;
+                cond_resched();
 	}
-	
-	
-/*
-	while(thread_control) {
-		//
-		struct free_block_t *entry;
-		int err;
-		spin_lock(&fb_list_lock);
-		while (!list_empty(&block_list) && thread_control) {
-			err = 0;
-			entry = list_first_entry(&block_list,
-					struct free_block_t, ls);
-			if (entry -> inode == NULL) {
-				list_del(&entry -> ls);
-				spin_unlock(&fb_list_lock);
-
-				atomic64_sub(entry->count, &total_blocks);
-
-				kmem_cache_free(allocator, entry);
-				spin_lock(&fb_list_lock);
-				continue;
-			}
-			list_del(&entry -> ls);
-			spin_unlock(&fb_list_lock);
-
-			num_freeing_blocks += entry->count;
-			err = free_blocks(entry);
-			num_free_blocks += entry->count;
-			
-			atomic64_sub(entry->count, &total_blocks);
-			kmem_cache_free(allocator, entry);
-			count_free_blocks++;
-
-		//
-			spin_lock(&fb_list_lock);
-		}
-		spin_unlock(&fb_list_lock);
-		msleep(1000);
-	}*/
 	return 0;
 }
 
-static unsigned long zspeed2 = 0;
 static int kt_free_block2(void)
 {
 
@@ -578,7 +580,7 @@ static int kt_free_block2(void)
                         //spin_unlock(&kt_free_lock);
 			num_freeing_blocks += 10000;
 			end_time = ktime_get();
-			elapsed_time2 += ktime_sub(end_time, start_time);
+			//elapsed_time2 += ktime_sub(end_time, start_time);
 			msleep(1);
 		} else {
 			msleep(1000);
@@ -676,6 +678,8 @@ static void monitor_media(void)
 		char dev_name[6];
 		u64 bfree, pz_blocks;
 		unsigned long read_write, zio, zfree;
+                unsigned int margin = 80 * cur_num_thread;
+                int need_thread = 0;
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
 		res.MediaWrites.Uint64 = 0;
@@ -714,20 +718,29 @@ static void monitor_media(void)
 				0 : res.MediaWrites.Uint64*64 
 					- num_freeing_blocks * 4096;
 		
-		zspeed = (num_freeing_blocks*4096)/(1<<20);
-		printk("before zspeed %lu\n", zspeed);
+		zspeed_monitor = (num_freeing_blocks*4096)/(1<<20);
+		//printk(KERN_ERR "before zspeed %lu\n", zspeed);
 		// long long int total_time = ktime_to_ns(elapsed_time) + ktime_to_ns(elapsed_time);
-		//long long int total_time = ktime_to_ns(elapsed_time);
-		total_time = elapsed_time;
+		total_time = ktime_to_ns(elapsed_time);
 		if(total_time > 0){
-			zspeed = zspeed*1000000000/total_time;
-			printk("zspeed and elapsed_time: %lu MB/s %llu ns\n", zspeed, total_time);
+			//zspeed = zspeed/total_time;
+			printk(KERN_ERR "zspeed and elapsed_time: %lu MB/s %lu ns\n", zspeed_monitor, total_time);
 		}
 		else{
-			printk("total time is 0 or negative\n");
+			printk(KERN_ERR "total time is 0 or negative\n");
 		}
 		num_freeing_blocks = 0;
 		elapsed_time = 0;
+
+                if (zspeed_monitor && zspeed_monitor + margin < zspeed) {
+                  need_thread = min_t(u64, (zspeed / (zspeed_monitor / cur_num_thread)) + 1, 4);
+                } else if (need_shrink) {
+                  need_thread = max_t(u64, cur_num_thread - 1, 1);
+                }
+
+                if (need_thread > 1) {
+                  cur_num_thread = manipulate_kthread(need_thread);
+                }
 
 		/*
 		if(zspeed > 2000){
@@ -781,6 +794,27 @@ static void monitor_media(void)
 	}
 }
 
+int manipulate_kthread(unsigned int need_thread) {
+  int i;
+
+  if (need_thread < cur_num_thread) {
+    //stop kthread
+    for (i = need_thread; i < cur_num_thread; i++)
+      kthread_stop(threads[i]);
+  }
+  else if (need_thread > cur_num_thread){
+    static struct task_struct **tmp;
+    //create kthread
+    for (i = cur_num_thread; i < need_thread; i++) {
+      tmp = &threads[i];
+      *tmp = kthread_create((int(*)(void*))kt_free_block,
+          NULL, "kt_free_block");
+      wake_up_process(*tmp);
+    }
+  }
+
+  return need_thread;
+}
 
 /*
 unsigned long timer_interval_ns = 1e6; 
@@ -858,6 +892,10 @@ static int __init kt_free_block_init(void)
 		 + pcmd->vendor->in_length);
 	tail->out_length = (u32) 128;
 
+        threads[0] = thread;
+        threads[1] = thread2;
+        threads[2] = thread3;
+        threads[3] = thread4;
 	
 	/*
 	ktime_t ktime = ktime_set(0, timer_interval_ns); 
