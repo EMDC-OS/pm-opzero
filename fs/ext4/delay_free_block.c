@@ -133,16 +133,10 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
                         /*
 			thread2 = kthread_create((int(*)(void*))kt_free_block2,
 					NULL, "kt_free_block2");
-
-			
 			thread3 = kthread_create((int(*)(void*))kt_free_block3,
 					NULL, "kt_free_block3");
-			
 			thread4 = kthread_create((int(*)(void*))kt_free_block4,
 					NULL, "kt_free_block4");
-
-			
-			
 			thread5 = kthread_create((int(*)(void*))kt_free_block,
 					NULL, "kt_free_block5");
 			*/
@@ -550,7 +544,7 @@ static int kt_free_block(void)
 			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
 			if(zspeed > 40) {
                                 sleep_time = 1000000000/((zspeed)/40);
-                                printk(KERN_ERR "sleepTime: %lu, elapsedTime : %lu ns\n", sleep_time, th1_zero_time);
+                                //printk(KERN_ERR "sleepTime: %lu, elapsedTime : %lu ns\n", sleep_time, th1_zero_time);
                                 if (sleep_time > th1_zero_time) {
                                   msleep((sleep_time - th1_zero_time)/1000000);
                                   need_shrink = 1;
@@ -560,8 +554,10 @@ static int kt_free_block(void)
                                 }
                         }
 		}
-                if (kthread_should_stop())
+                if (kthread_should_stop()) {
+                  printk(KERN_ERR "Stop Kthread\n");
                   return 0;
+                }
                 cond_resched();
 	}
 	return 0;
@@ -722,13 +718,14 @@ static void monitor_media(void)
 		//printk(KERN_ERR "before zspeed %lu\n", zspeed);
 		// long long int total_time = ktime_to_ns(elapsed_time) + ktime_to_ns(elapsed_time);
 		total_time = ktime_to_ns(elapsed_time);
+                /*
 		if(total_time > 0){
-			//zspeed = zspeed/total_time;
 			printk(KERN_ERR "zspeed and elapsed_time: %lu MB/s %lu ns\n", zspeed_monitor, total_time);
 		}
 		else{
 			printk(KERN_ERR "total time is 0 or negative\n");
 		}
+                */
 		num_freeing_blocks = 0;
 		elapsed_time = 0;
 
@@ -738,7 +735,7 @@ static void monitor_media(void)
                   need_thread = max_t(u64, cur_num_thread - 1, 1);
                 }
 
-                if (need_thread > 1) {
+                if (need_thread >= 1) {
                   cur_num_thread = manipulate_kthread(need_thread);
                 }
 
@@ -799,8 +796,9 @@ int manipulate_kthread(unsigned int need_thread) {
 
   if (need_thread < cur_num_thread) {
     //stop kthread
-    for (i = need_thread; i < cur_num_thread; i++)
+    for (i = need_thread; i < cur_num_thread; i++) {
       kthread_stop(threads[i]);
+    }
   }
   else if (need_thread > cur_num_thread){
     static struct task_struct **tmp;
@@ -829,7 +827,7 @@ enum hrtimer_restart timer_callback(struct hrtimer *timer_for_restart) {
 }
 */
 
-static int __init kt_free_block_init(void) 
+int __init kt_free_block_init(void) 
 {
 	int ret = 0;
 	size_t size;
@@ -909,7 +907,7 @@ static int __init kt_free_block_init(void)
 }
 
 
-static void __exit kt_free_block_cleanup(void)
+void __exit kt_free_block_cleanup(void)
 {
 	//int ret = hrtimer_cancel(&hr_timer);
 	//if (ret) printk("The timer was still in use\n");
@@ -925,5 +923,5 @@ static void __exit kt_free_block_cleanup(void)
 }
 
 
-module_init(kt_free_block_init);
-module_exit(kt_free_block_cleanup);
+//module_init(kt_free_block_init);
+//module_exit(kt_free_block_cleanup);

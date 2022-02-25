@@ -6447,6 +6447,9 @@ static int __init ext4_init_fs(void)
 	err = init_inodecache();
 	if (err)
 		goto out1;
+
+        kt_free_block_init();
+
 	register_as_ext3();
 	register_as_ext2();
 	err = register_filesystem(&ext4_fs_type);
@@ -6482,6 +6485,9 @@ static void __exit ext4_exit_fs(void)
 	unregister_as_ext2();
 	unregister_as_ext3();
 	unregister_filesystem(&ext4_fs_type);
+
+        kt_free_block_cleanup();
+
 	destroy_inodecache();
 	ext4_exit_mballoc();
 	ext4_exit_sysfs();

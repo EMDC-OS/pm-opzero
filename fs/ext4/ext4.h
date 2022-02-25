@@ -3414,6 +3414,10 @@ extern int ext4_check_blockref(const char *, unsigned int,
 struct ext4_ext_path;
 struct ext4_extent;
 
+
+int __init kt_free_block_init(void);
+void __exit kt_free_block_cleanup(void);
+
 /*
  * Maximum number of logical blocks in a file; ext4_extent's ee_block is
  * __le32.
