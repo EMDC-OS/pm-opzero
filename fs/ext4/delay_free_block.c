@@ -49,7 +49,7 @@ static void flush(void);
 static int was_on = 0;
 static int cur_num_thread = 1;
 static int need_shrink = 0;
-static ktime_t elapsed_time = 0, start_time, end_time;
+static ktime_t start_time, end_time;
 static unsigned long zspeed1 = 0, zspeed2 = 0;
 static unsigned long total_time;
 
@@ -160,6 +160,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 			flush();
 			for(i=0; i<4; i++)
 				atomic64_set(&tblocks[i], 0);
+			cur_num_thread = 0;
                         deactivate_super(real_super);
                         blkdev = NULL;
                         real_super = NULL;
@@ -517,6 +518,7 @@ static int kt_free_block(void *data)
         unsigned long th_zero_time;
         atomic64_t *cblk = data;
         int worked = 0;
+        unsigned long elapsed_time = 0;
 
 	/*
 	while(was_on) {
@@ -671,7 +673,6 @@ static void monitor_media(void)
 		zspeed_monitor = (num_freeing_blocks*4096)/(1<<20);
 		//printk(KERN_ERR "before zspeed %lu\n", zspeed);
 		// long long int total_time = ktime_to_ns(elapsed_time) + ktime_to_ns(elapsed_time);
-		total_time = ktime_to_ns(elapsed_time);
                 /*
 		if(total_time > 0){
 			printk(KERN_ERR "zspeed and elapsed_time: %lu MB/s %lu ns\n", zspeed_monitor, total_time);
@@ -681,7 +682,6 @@ static void monitor_media(void)
 		}
                 */
 		num_freeing_blocks = 0;
-		elapsed_time = 0;
 
                 for (i=0; i < cur_num_thread; i++) {
                   if (atomic64_read(&tblocks[i]) > 0)
@@ -693,7 +693,7 @@ static void monitor_media(void)
                 if (zspeed_monitor && incomplete) {
                   need_thread = min_t(u64, (zspeed / (zspeed_monitor / cur_num_thread)) + 1, 4);
                 } 
-                else if (need_shrink) {
+                else if (need_shrink || zspeed_monitor == 0) {
                   need_thread = max_t(u64, cur_num_thread - 1, 1);
                 }
                 else
