@@ -26,6 +26,7 @@ static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
 static unsigned long num_freeing_blocks;
 static atomic64_t total_blocks;
+static atomic64_t tblocks[4];
 static unsigned long read_bytes, write_bytes;
 static unsigned long zspeed, zspeed_monitor;
 static int thread_control;
@@ -41,7 +42,7 @@ struct super_block *real_super;
 static struct free_block_t *tmp_entry;
 static int zero_ratio;
 static int rc;
-static int kt_free_block(void);
+static int kt_free_block(void *);
 static int manipulate_kthread(unsigned int);
 static void monitor_media(void);
 static void flush(void);
@@ -87,9 +88,10 @@ static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
 	return scnprintf(buf, PAGE_SIZE,"MediaReads_0: %lu\n"
 					"MediaWrites_0: %lu\n"
 					"Zero Ratio: %d\n"
-					"Zero_speed: %lu\n",
+					"Zero_speed: %lu\n"
+					"cur_thread: %d\n",
 			read_bytes/(1<<20), write_bytes/(1<<20),
-			zero_ratio, zspeed_monitor);
+			zero_ratio, zspeed_monitor, cur_num_thread);
 }
 
 static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -129,7 +131,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 				kthread_create((int(*)(void*))monitor_media, NULL,
 						"monitor_media");
 			thread = kthread_create((int(*)(void*))kt_free_block,
-					NULL, "kt_free_block");
+					&tblocks, "kt_free_block");
                         /*
 			thread2 = kthread_create((int(*)(void*))kt_free_block2,
 					NULL, "kt_free_block2");
@@ -506,12 +508,13 @@ int ext4_free_num_blocks(long count)
 }
 EXPORT_SYMBOL(ext4_free_num_blocks);
 
-static int kt_free_block(void)
+static int kt_free_block(void *data)
 {
 	//ktime_t start_time, end_time;
 	//struct timeval startTime, endTime;
-        unsigned long sleep_time;
-        unsigned long th1_zero_time;
+        unsigned long th_zero_time;
+        atomic64_t *cblk = data;
+        int worked = 0;
 
 	/*
 	while(was_on) {
@@ -529,99 +532,45 @@ static int kt_free_block(void)
 	*/
 	// without speed control
 	while(was_on) {
-		//long cnt = (long)atomic64_read(&total_blocks);
-		if((long)atomic64_read(&total_blocks) >= 10000) {
-			start_time = ktime_get();
-			//gettimeofday(&startTime, NULL);
-			ext4_free_num_blocks(10000);
-			num_freeing_blocks += 10000;
-			//gettimeofday(&endTime, NULL);
-    			//elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
-			end_time = ktime_get();
-			elapsed_time += ktime_sub(end_time, start_time);
-                        th1_zero_time = ktime_to_ns(ktime_sub(end_time, start_time));
-                        
-			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
-			if(zspeed > 40) {
-                                sleep_time = 1000000000/((zspeed)/40);
-                                //printk(KERN_ERR "sleepTime: %lu, elapsedTime : %lu ns\n", sleep_time, th1_zero_time);
-                                if (sleep_time > th1_zero_time) {
-                                  msleep((sleep_time - th1_zero_time)/1000000);
-                                  need_shrink = 1;
-                                }
-                                else {
-                                  need_shrink = 0;
-                                }
-                        }
-		}
+                while (atomic64_read(cblk) > 0) {
+                    long cnt = min_t(u64, (long)atomic64_read(cblk), 1000);
+		    if((long)atomic64_read(&total_blocks) >= cnt) {
+		    	start_time = ktime_get();
+		    	//gettimeofday(&startTime, NULL);
+                        atomic64_sub(cnt, cblk);
+		    	ext4_free_num_blocks(cnt);
+		    	num_freeing_blocks += cnt;
+		    	//gettimeofday(&endTime, NULL);
+    		    	//elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
+		    	end_time = ktime_get();
+		    	elapsed_time += ktime_sub(end_time, start_time);
+                        //th_zero_time = ktime_to_ns(ktime_sub(end_time, start_time));
+		    }
+                    cond_resched();
+                    worked = 1;
+                }
+                //sleep_time = 1000000000/((zspeed)/40);
+                //if (sleep_time > th_zero_time) {
+                if (worked) {
+                  th_zero_time = ktime_to_ns(elapsed_time);
+                  //printk(KERN_ERR "elapsedTime : %lu ns\n",  th_zero_time);
+                  if (th_zero_time < 1000000000) {
+                    msleep((1000000000-th_zero_time)/1000000);
+                    if (th_zero_time < 500000000)
+                      need_shrink = 1;
+                    else
+                      need_shrink = 0;
+                  }
+                }
+                worked = 0;
                 if (kthread_should_stop()) {
-                  printk(KERN_ERR "Stop Kthread\n");
+                  //printk(KERN_ERR "Stop Kthread\n");
                   return 0;
                 }
                 cond_resched();
 	}
 	return 0;
 }
-
-static int kt_free_block2(void)
-{
-
-	ktime_t start_time, end_time;
-
-	while(was_on) {
-		if((long)atomic64_read(&total_blocks) >= 10000 && zspeed2 != 0) {
-                        //spin_lock(&kt_free_lock);
-			start_time = ktime_get();
-			ext4_free_num_blocks(10000);
-                        //spin_unlock(&kt_free_lock);
-			num_freeing_blocks += 10000;
-			end_time = ktime_get();
-			//elapsed_time2 += ktime_sub(end_time, start_time);
-			msleep(1);
-		} else {
-			msleep(1000);
-		}
-	}
-}
-
-
-static int kt_free_block3(void)
-{
-	ktime_t start_time, end_time;
-	while(was_on) {
-		//long cnt = (long)atomic64_read(&total_blocks);
-		if((long)atomic64_read(&total_blocks) >= 10000) {
-			start_time = ktime_get();
-			ext4_free_num_blocks(10000);
-			num_freeing_blocks += 10000;
-			end_time = ktime_get();
-			elapsed_time += ktime_sub(end_time, start_time);
-			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
-		}
-		msleep(1);
-	}
-	return 0;
-}
-
-static int kt_free_block4(void)
-{
-	ktime_t start_time, end_time;
-	while(was_on) {
-		//long cnt = (long)atomic64_read(&total_blocks);
-		if((long)atomic64_read(&total_blocks) >= 10000) {
-			start_time = ktime_get();
-			ext4_free_num_blocks(10000);
-			num_freeing_blocks += 10000;
-			end_time = ktime_get();
-			elapsed_time += ktime_sub(end_time, start_time);
-			//printk("elapsedTime : %lld ns\n",  ktime_to_ns(elapsed_time));
-		}
-		msleep(1);
-	}
-	return 0;
-}
-
-
 
 
 static void flush(void)
@@ -667,16 +616,18 @@ static void monitor_media(void)
 {
 	struct ext4_sb_info *sbi;
 	uint64_t zblocks;
+        int i, incomplete = 0;
+
 	sbi = EXT4_SB(real_super);
 	zblocks = atomic64_read(&total_blocks);
 	while(was_on) {
-		int i;
 		//int idle = 0;
 		char dev_name[6];
 		u64 bfree, pz_blocks;
 		unsigned long read_write, zio, zfree;
                 unsigned int margin = 80 * cur_num_thread;
                 int need_thread = 0;
+                incomplete = 0;
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
 		res.MediaWrites.Uint64 = 0;
@@ -730,15 +681,32 @@ static void monitor_media(void)
 		num_freeing_blocks = 0;
 		elapsed_time = 0;
 
-                if (zspeed_monitor && zspeed_monitor + margin < zspeed) {
+                for (i=0; i < cur_num_thread; i++) {
+                  if (atomic64_read(&tblocks[i]) > 0)
+                    incomplete = 1;
+                  if (incomplete)
+                    break;
+                }
+                  
+                if (zspeed_monitor && incomplete) {
                   need_thread = min_t(u64, (zspeed / (zspeed_monitor / cur_num_thread)) + 1, 4);
-                } else if (need_shrink) {
+                } 
+                else if (need_shrink) {
                   need_thread = max_t(u64, cur_num_thread - 1, 1);
                 }
+                else
+                  need_thread = cur_num_thread;
+
+                for (i=0; i < need_thread; i++)
+                  atomic64_set(&tblocks[i], (zspeed*1024/4)/need_thread);
+                for (i=need_thread; i < 4; i++)
+                  atomic64_set(&tblocks[i], 0);
 
                 if (need_thread >= 1) {
+                  // if same, just passed
                   cur_num_thread = manipulate_kthread(need_thread);
                 }
+
 
 		/*
 		if(zspeed > 2000){
@@ -807,7 +775,8 @@ int manipulate_kthread(unsigned int need_thread) {
     for (i = cur_num_thread; i < need_thread; i++) {
       tmp = &threads[i];
       *tmp = kthread_create((int(*)(void*))kt_free_block,
-          NULL, "kt_free_block");
+          &tblocks[i], "kt_free_block");
+      printk(KERN_ERR "Create Kthread %d\n", i+1);
       wake_up_process(*tmp);
     }
   }
@@ -895,6 +864,11 @@ int __init kt_free_block_init(void)
         threads[1] = thread2;
         threads[2] = thread3;
         threads[3] = thread4;
+
+	atomic64_set(&tblocks[0], 0);
+	atomic64_set(&tblocks[1], 0);
+	atomic64_set(&tblocks[2], 0);
+	atomic64_set(&tblocks[3], 0);
 	
 	/*
 	ktime_t ktime = ktime_set(0, timer_interval_ns); 
