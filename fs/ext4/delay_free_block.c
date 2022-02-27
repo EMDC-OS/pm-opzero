@@ -98,12 +98,12 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 		const char *buf, size_t len)
 {
 	struct frblk_attr *frblk = container_of(attr, struct frblk_attr, attr);
+	int i;
 
 	sscanf(buf, "%d", &frblk->value);
 	sysfs_notify(frblk_kobj, NULL, "frblk_notify");
 	if (frblk->value == 1) {
 		if (was_on == 0) {
-			int i;
 			for(i = 0; i < 6; i++) {
 				char dev_name[6];
 				snprintf(dev_name, 6, "nmem%d", i);
@@ -158,6 +158,8 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
 			thread_control = 0;	
                         was_on = 0;
 			flush();
+			for(i=0; i<4; i++)
+				atomic64_set(&tblocks[i], 0);
                         deactivate_super(real_super);
                         blkdev = NULL;
                         real_super = NULL;
