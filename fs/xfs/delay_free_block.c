@@ -32,7 +32,7 @@ static meminfo init_rw[6];
 static input_info input;
 static struct nd_cmd_vendor_tail *tail;
 static dev_t devnum;
-static struct free_block_t *tmp_entry;
+// static struct free_block_t *tmp_entry;
 static struct block_device *blkdev;
 static struct super_block *real_super; 
 static int zero_ratio;
@@ -48,6 +48,14 @@ static ktime_t start_time, end_time;
 static unsigned long zspeed1 = 0, zspeed2 = 0;
 static unsigned long total_time;
 static char *blkdev_name;
+
+typedef struct zthread {
+  struct task_struct *thread;
+  struct free_block_t *tmp_entry;
+  atomic64_t tblock;
+}zthread_t;
+
+static zthread_t bzthreads[4];
 
 static struct kobject *frblk_kobj;
 
@@ -125,8 +133,8 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
                         thread_monitoring =
                                 kthread_create((int(*)(void*))monitor_media, NULL,
                                                 "monitor_media");
-                        thread = kthread_create((int(*)(void*))kt_free_block,
-                                        &tblocks, "kt_free_block");
+                        bzthreads[0].thread = kthread_create((int(*)(void*))kt_free_block,
+                                        &bzthreads[0], "kt_free_block");
                         /*
                         thread2 = kthread_create((int(*)(void*))kt_free_block2,
                                         NULL, "kt_free_block2");
@@ -141,7 +149,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
                         was_on = 1;
                         cur_num_thread = 1;
                         wake_up_process(thread_monitoring);
-                        wake_up_process(thread);
+                        wake_up_process(bzthreads[0].thread);
                         //wake_up_process(thread2);
                         //wake_up_process(thread3);
                         //wake_up_process(thread4);
@@ -154,7 +162,7 @@ static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
                         was_on = 0;
                         flush();
                         for(i=0; i<4; i++)
-                                atomic64_set(&tblocks[i], 0);
+                                atomic64_set(&bzthreads[i].tblock, 0);
                         cur_num_thread = 0;
                         deactivate_super(real_super);
                         blkdev = NULL;
@@ -337,7 +345,7 @@ commit_out:
 	return error;
 }
 
-int xfs_free_num_blocks(xfs_extlen_t len) 
+int xfs_free_num_blocks(xfs_extlen_t len, struct free_block_t *tmp_entry) 
 {
 	struct free_block_t *entry;
 	int err;
@@ -345,6 +353,10 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 	while(len){
 		err = 0;
 		spin_lock(&fb_list_lock);
+                if (list_empty(&block_list)) {
+                  spin_unlock(&fb_list_lock);
+                  break;
+                } 
 		entry = list_first_entry(&block_list,
 				struct free_block_t, ls);
 		//Check if this entry has more blocks than needed
@@ -390,6 +402,7 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 			atomic64_sub(tmp_entry->len, &total_blocks);
 			kmem_cache_free(allocator, entry);
 		}
+
 	}
 	return 1;
 }
@@ -401,9 +414,10 @@ static int kt_free_block(void *data)
         //ktime_t start_time, end_time;
         //struct timeval startTime, endTime;
         unsigned long th_zero_time;
-        atomic64_t *cblk = data;
+        atomic64_t *cblk = &((zthread_t*)data)->tblock;
         int worked = 0;
         unsigned long elapsed_time = 0;
+        struct free_block_t *tmp_entry = ((zthread_t*)data)->tmp_entry;
 
         while(was_on) {
                 while (atomic64_read(cblk) > 0) {
@@ -412,7 +426,7 @@ static int kt_free_block(void *data)
                         start_time = ktime_get();
                         //gettimeofday(&startTime, NULL);
                         atomic64_sub(cnt, cblk);
-                        xfs_free_num_blocks(cnt);
+                        xfs_free_num_blocks(cnt, tmp_entry);
                         num_freeing_blocks += cnt;
                         //gettimeofday(&endTime, NULL);
                         //elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
@@ -439,10 +453,12 @@ static int kt_free_block(void *data)
                 worked = 0;
                 if (kthread_should_stop()) {
                   //printk(KERN_ERR "Stop Kthread\n");
+                  kmem_cache_free(allocator, tmp_entry);
                   return 0;
                 }
                 cond_resched();
         }
+	kmem_cache_free(allocator, tmp_entry);
         return 0;
 }
 
@@ -599,7 +615,7 @@ static void monitor_media(void)
                 //zio = min_t(u64, 8000 - read_write, 4000);
 
                 for (i=0; i < cur_num_thread; i++) {
-                  if (atomic64_read(&tblocks[i]) > 0)
+                  if (atomic64_read(&bzthreads[i].tblock) > 0)
                     incomplete = 1;
                   if (incomplete)
                     break;
@@ -615,9 +631,9 @@ static void monitor_media(void)
                   need_thread = cur_num_thread;
 
                 for (i=0; i < need_thread; i++)
-                  atomic64_set(&tblocks[i], (zspeed*1024/4)/need_thread);
+                  atomic64_set(&bzthreads[i].tblock, (zspeed*1024/4)/need_thread);
                 for (i=need_thread; i < 4; i++)
-                  atomic64_set(&tblocks[i], 0);
+                  atomic64_set(&bzthreads[i].tblock, 0);
 
                 if (need_thread >= 1) {
                   // if same, just passed
@@ -656,18 +672,16 @@ int manipulate_kthread(unsigned int need_thread) {
   if (need_thread < cur_num_thread) {
     //stop kthread
     for (i = need_thread; i < cur_num_thread; i++) {
-      kthread_stop(threads[i]);
+      kthread_stop(bzthreads[i].thread);
     }
   }
   else if (need_thread > cur_num_thread){
-    static struct task_struct **tmp;
     //create kthread
     for (i = cur_num_thread; i < need_thread; i++) {
-      tmp = &threads[i];
-      *tmp = kthread_create((int(*)(void*))kt_free_block,
-          &tblocks[i], "kt_free_block");
+      bzthreads[i].thread = kthread_create((int(*)(void*))kt_free_block,
+          &bzthreads[i], "kt_free_block");
       printk(KERN_ERR "Create Kthread %d\n", i+1);
-      wake_up_process(*tmp);
+      wake_up_process(bzthreads[i].thread);
     }
   }
 
@@ -676,7 +690,7 @@ int manipulate_kthread(unsigned int need_thread) {
 
 static int __init kt_free_block_init(void) 
 {
-	int ret = 0;
+	int i, ret = 0;
 	size_t size;
 	rc = 0;
 	count_free_blocks = 0;
@@ -708,7 +722,7 @@ static int __init kt_free_block_init(void)
         }
         strncpy(blkdev_name, "/dev/pmem0", 10);
 
-	tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
+	// tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
 
 	frblk_kobj = kobject_create_and_add("free_block_xfs", NULL);
 	ret = sysfs_create_group(frblk_kobj, &frblk_group);
@@ -734,24 +748,25 @@ static int __init kt_free_block_init(void)
 		 + pcmd->vendor->in_length);
 	tail->out_length = (u32) 128;
 	
-	threads[0] = thread;
-        threads[1] = thread2;
-        threads[2] = thread3;
-        threads[3] = thread4;
-
-        atomic64_set(&tblocks[0], 0);
-        atomic64_set(&tblocks[1], 0);
-        atomic64_set(&tblocks[2], 0);
-        atomic64_set(&tblocks[3], 0);
+        for (i=0; i<4; i++) {
+          atomic64_set(&bzthreads[i].tblock, 0);
+          bzthreads[i].tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
+        }
+	// threads[0] = thread;
+ //        threads[1] = thread2;
+ //        threads[2] = thread3;
+ //        threads[3] = thread4;
 
 	return 1;
 }
 
 static void __exit kt_free_block_cleanup(void)
 {
+        int i;
 	printk(KERN_INFO "Cleaning up kt_free_block module...\n");
 	kmem_cache_free(ndctl_alloc, pcmd);
-	kmem_cache_free(allocator, tmp_entry);
+        for (i=0; i<4; i++)
+          kmem_cache_free(allocator, bzthreads[i].tmp_entry);
 	kfree(blkdev_name);
 	kmem_cache_shrink(allocator);
 	kmem_cache_shrink(ndctl_alloc);
