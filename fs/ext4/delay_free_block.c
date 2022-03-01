@@ -39,7 +39,7 @@ static struct nd_cmd_vendor_tail *tail;
 static char *blkdev_name;
 struct block_device *blkdev;
 struct super_block *real_super;
-static struct free_block_t *tmp_entry;
+//static struct free_block_t *tmp_entry;
 static int zero_ratio;
 static int rc;
 static int kt_free_block(void *);
@@ -464,7 +464,7 @@ error_return:
  * Number of pre-zero blocks must be checked before
  * Called by ext4_has_free_clusters()
  * */
-int ext4_free_num_blocks(long count) 
+int ext4_free_num_blocks(long count, struct free_block_t *tmp_entry) 
 {
 	struct free_block_t *entry;
 	int err;
@@ -519,7 +519,7 @@ static int kt_free_block(void *data)
         atomic64_t *cblk = data;
         int worked = 0;
         unsigned long elapsed_time = 0;
-
+        struct free_block_t *tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
 	/*
 	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
@@ -542,7 +542,7 @@ static int kt_free_block(void *data)
 		    	start_time = ktime_get();
 		    	//gettimeofday(&startTime, NULL);
                         atomic64_sub(cnt, cblk);
-		    	ext4_free_num_blocks(cnt);
+		    	ext4_free_num_blocks(cnt, tmp_entry);
 		    	num_freeing_blocks += cnt;
 		    	//gettimeofday(&endTime, NULL);
     		    	//elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
@@ -569,10 +569,12 @@ static int kt_free_block(void *data)
                 worked = 0;
                 if (kthread_should_stop()) {
                   //printk(KERN_ERR "Stop Kthread\n");
+                  kmem_cache_free(allocator, tmp_entry);
                   return 0;
                 }
                 cond_resched();
 	}
+	kmem_cache_free(allocator, tmp_entry);
 	return 0;
 }
 
@@ -836,7 +838,7 @@ int __init kt_free_block_init(void)
 		return -1;
         }
         strncpy(blkdev_name, "/dev/pmem0", 10);
-	tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
+	//tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
 
 	frblk_kobj = kobject_create_and_add("free_block", NULL);
 	ret = sysfs_create_group(frblk_kobj, &frblk_group);
@@ -892,7 +894,7 @@ void __exit kt_free_block_cleanup(void)
 
 	printk(KERN_INFO "Cleaning up kt_free_block module...\n");
 	kmem_cache_free(ndctl_alloc, pcmd);
-	kmem_cache_free(allocator, tmp_entry);
+	//kmem_cache_free(allocator, tmp_entry);
 	kmem_cache_shrink(ext4_free_data_cachep);
         kfree(blkdev_name);
 	kmem_cache_shrink(allocator);
