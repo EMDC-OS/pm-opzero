@@ -4,20 +4,26 @@
  * */
 
 #include "delay_free_block.h"
+#include "linux/ktime.h"
 
-
+static struct task_struct *threads[4];
 static struct task_struct *thread;
+static struct task_struct *thread2;
+static struct task_struct *thread3;
+static struct task_struct *thread4;
 static struct task_struct *thread_monitoring;
 static struct list_head block_list;
 static struct kmem_cache* allocator;
 static struct kmem_cache* ndctl_alloc;
 static spinlock_t fb_list_lock; 
+static spinlock_t kt_free_lock;
 static unsigned long count_free_blocks;
 static unsigned long num_free_blocks;
 static unsigned long num_freeing_blocks;
 static atomic64_t total_blocks;
+static atomic64_t tblocks[4];
 static unsigned long read_bytes, write_bytes;
-static unsigned long zspeed;
+static unsigned long zspeed, zspeed_monitor;
 static int thread_control;
 static struct ndctl_cmd *pcmd;
 static meminfo output[6];
@@ -31,10 +37,16 @@ static struct block_device *blkdev;
 static struct super_block *real_super; 
 static int zero_ratio;
 static int rc;
-static int kt_free_block(void);
+static int kt_free_block(void *);
+static int manipulate_kthread(unsigned int);
 static void monitor_media(void);
 static void flush(void);
 int was_on=0;
+static int cur_num_thread = 1;
+static int need_shrink = 0;
+static ktime_t start_time, end_time;
+static unsigned long zspeed1 = 0, zspeed2 = 0;
+static unsigned long total_time;
 static char *blkdev_name;
 
 static struct kobject *frblk_kobj;
@@ -47,11 +59,13 @@ struct frblk_attr{
 static struct frblk_attr frblk_value;
 static struct frblk_attr frblk_notify;
 static struct frblk_attr target_blkdev;
+static struct frblk_attr set_speed;
 
 static struct attribute *frblk_attrs[] = {
 	&frblk_value.attr.attr,
 	&frblk_notify.attr.attr,
 	&target_blkdev.attr.attr,
+	&set_speed.attr.attr,
 	NULL
 };
 
@@ -59,90 +73,109 @@ static struct attribute_group frblk_group = {
 	.attrs = frblk_attrs,
 };
 
+
 static ssize_t frblk_show(struct kobject *kobj, struct kobj_attribute *attr,
-		char *buf)
+                char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE,
-					"MediaReads_0: %lu\n"
-					"MediaWrites_0: %lu\n"
-					"Zero Ratio: %d\n"
-					"Zero speed: %lu\n", 
-			read_bytes/(1<<20), write_bytes/(1<<20),
-			zero_ratio, zspeed);
+        return scnprintf(buf, PAGE_SIZE,"MediaReads_0: %lu\n"
+                                        "MediaWrites_0: %lu\n"
+                                        "Zero Ratio: %d\n"
+                                        "Zero_speed: %lu\n"
+                                        "cur_thread: %d\n"
+                                        "Zspeed: %lu\n",
+                        read_bytes/(1<<20), write_bytes/(1<<20),
+                        zero_ratio, zspeed_monitor, cur_num_thread, zspeed);
 }
 
-static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
-		const char *buf, size_t len)
-{
-	struct frblk_attr *frblk = container_of(attr, struct frblk_attr, attr);
 
-	sscanf(buf, "%d", &frblk->value);
-	sysfs_notify(frblk_kobj, NULL, "frblk_notify");
-	if (frblk->value == 1) {
-		if (was_on == 0) {
-			int i;
-			for(i = 0; i < 6; i++) {
-				char dev_name[6];
-				snprintf(dev_name, 6, "nmem%d", i);
-				rc = dev_nd_ioctl(dev_name, ND_IOCTL_VENDOR, 
-					(unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);	
-				if(rc) {
-					printk(KERN_ERR "%s: Error on nd_ioctl(%d)\n", 
-						__func__, rc);
-				}
-				memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
-			}
-			// devnum = ((259 & 0xfff) << 20) | (1 & 0xff) + 1;
-			// blkdev = bdget(devnum);
-			blkdev = lookup_bdev(blkdev_name);
+
+static ssize_t frblk_store(struct kobject *kobj, struct kobj_attribute *attr,
+                const char *buf, size_t len)
+{
+        struct frblk_attr *frblk = container_of(attr, struct frblk_attr, attr);
+        int i;
+
+        sscanf(buf, "%d", &frblk->value);
+        sysfs_notify(frblk_kobj, NULL, "frblk_notify");
+        if (frblk->value == 1) {
+                if (was_on == 0) {
+                        for(i = 0; i < 6; i++) {
+                                char dev_name[6];
+                                snprintf(dev_name, 6, "nmem%d", i);
+                                rc = dev_nd_ioctl(dev_name, ND_IOCTL_VENDOR, 
+                                        (unsigned long)&pcmd->cmd_buf, DIMM_IOCTL);     
+                                if(rc) {
+                                        printk(KERN_ERR "%s: Error on nd_ioctl\n", 
+                                                __func__);
+                                }
+                                memcpy(&init_rw[i], tail->out_buf, sizeof(meminfo));
+                        }
+                        //devnum = ((259 & 0xfff) << 20) | (1 & 0xff);
+                        blkdev = lookup_bdev(blkdev_name);
                         if (!blkdev) {
                                 printk(KERN_ERR "No block device\n");
                                 goto out;
                         }
-			real_super = get_active_super(blkdev);
+                        real_super = get_active_super(blkdev);
                         if (!real_super) {
                                 printk(KERN_ERR "No super block for blkdev\n");
                                 goto out;
                         }
 
-			thread_monitoring =
-				kthread_create((int(*)(void*))monitor_media, NULL,
-						"monitor_media");
-			
-			thread = kthread_create((int(*)(void *))kt_free_block,
-						NULL, "kt_free_block");
-			was_on = 1;
-			wake_up_process(thread_monitoring);
-			wake_up_process(thread);
-		}
-	} 
+                        thread_monitoring =
+                                kthread_create((int(*)(void*))monitor_media, NULL,
+                                                "monitor_media");
+                        thread = kthread_create((int(*)(void*))kt_free_block,
+                                        &tblocks, "kt_free_block");
+                        /*
+                        thread2 = kthread_create((int(*)(void*))kt_free_block2,
+                                        NULL, "kt_free_block2");
+                        thread3 = kthread_create((int(*)(void*))kt_free_block3,
+                                        NULL, "kt_free_block3");
+                        thread4 = kthread_create((int(*)(void*))kt_free_block4,
+                                        NULL, "kt_free_block4");
+                        thread5 = kthread_create((int(*)(void*))kt_free_block,
+                                        NULL, "kt_free_block5");
+                        */
+
+                        was_on = 1;
+                        cur_num_thread = 1;
+                        wake_up_process(thread_monitoring);
+                        wake_up_process(thread);
+                        //wake_up_process(thread2);
+                        //wake_up_process(thread3);
+                        //wake_up_process(thread4);
+                        //wake_up_process(thread5);
+                }
+        }
 	else if (frblk->value == 0) {
-		if (was_on) {
-			thread_control = 0;	
-            		was_on = 0;
-			flush();
-            		deactivate_super(real_super);
-			blkdev = NULL;
-            		real_super = NULL;
-        	}
-	}
-	else if (frblk->value == 3) {
-		devnum = ((259 & 0xfff) << 20) | (1 & 0xff) + 1 ;
-		blkdev = bdget(devnum);
-		flush();
-	}
+                if (was_on) {
+                        thread_control = 0;
+                        was_on = 0;
+                        flush();
+                        for(i=0; i<4; i++)
+                                atomic64_set(&tblocks[i], 0);
+                        cur_num_thread = 0;
+                        deactivate_super(real_super);
+                        blkdev = NULL;
+                        real_super = NULL;
+                }
+        }
+        else if (frblk->value == 3) {
+                //flush();
+        }
 out:
-	return len;
+        return len;
 }
 
-/*
+
 static struct frblk_attr frblk_value = {
 	.attr = __ATTR(frblk_value, 0644, frblk_show, frblk_store),
 	.value = 0,
 };
-*/
 
 
+/*
 static struct frblk_attr frblk_value = {
 	.attr = __ATTR(frblk_value, 0644, frblk_show, frblk_store),static ssize_t blkdevname_store(struct kobject *kobj, struct kobj_attribute *attr,
 		const char *buf, size_t len)
@@ -152,6 +185,7 @@ static struct frblk_attr frblk_value = {
 }
 	.value = 0,
 };
+*/
 
 static struct frblk_attr frblk_notify = {
 	.attr = __ATTR(frblk_notify, 0644, frblk_show, frblk_store),
@@ -175,6 +209,25 @@ static struct frblk_attr target_blkdev = {
 	.attr = __ATTR(target_blkdev, 0644, blkdevname_show, blkdevname_store),
 	.value = 0,
 };
+
+static ssize_t set_speed_show(struct kobject *kobj, struct kobj_attribute *attr,
+                char *buf)
+{
+        return scnprintf(buf, PAGE_SIZE, "%lu\n", zspeed);
+}
+
+static ssize_t set_speed_store(struct kobject *kobj, struct kobj_attribute *attr,
+                const char *buf, size_t len)
+{
+        sscanf(buf, "%lu", &zspeed);
+        return len;
+}
+
+static struct frblk_attr set_speed = {
+        .attr = __ATTR(set_speed, 0644, set_speed_show, set_speed_store),
+        .value = 0,
+};
+
 
 /* Get total blocks in the free_block list
  * */
@@ -342,20 +395,57 @@ int xfs_free_num_blocks(xfs_extlen_t len)
 }
 EXPORT_SYMBOL(xfs_free_num_blocks);
 
-static int kt_free_block(void)
+
+static int kt_free_block(void *data)
 {
-	while(was_on) {
-		if((long)atomic64_read(&total_blocks) >= 10000) {
-			xfs_free_num_blocks(10000);
-			num_freeing_blocks+=10000;
-			if(zspeed >= 40)
-				msleep(1000/(zspeed/40)-1);
-		} else {
-			msleep(10000);
-		}
-	}
-	return 0;
+        //ktime_t start_time, end_time;
+        //struct timeval startTime, endTime;
+        unsigned long th_zero_time;
+        atomic64_t *cblk = data;
+        int worked = 0;
+        unsigned long elapsed_time = 0;
+
+        while(was_on) {
+                while (atomic64_read(cblk) > 0) {
+                    long cnt = min_t(u64, (long)atomic64_read(cblk), 1000);
+                    if((long)atomic64_read(&total_blocks) >= cnt) {
+                        start_time = ktime_get();
+                        //gettimeofday(&startTime, NULL);
+                        atomic64_sub(cnt, cblk);
+                        xfs_free_num_blocks(cnt);
+                        num_freeing_blocks += cnt;
+                        //gettimeofday(&endTime, NULL);
+                        //elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
+                        end_time = ktime_get();
+                        elapsed_time += ktime_sub(end_time, start_time);
+                        //th_zero_time = ktime_to_ns(ktime_sub(end_time, start_time));
+                    }
+                    cond_resched();
+                    worked = 1;
+                }
+                //sleep_time = 1000000000/((zspeed)/40);
+                //if (sleep_time > th_zero_time) {
+                if (worked) {
+                  th_zero_time = ktime_to_ns(elapsed_time);
+                  //printk(KERN_ERR "elapsedTime : %lu ns\n",  th_zero_time);
+                  if (th_zero_time < 1000000000) {
+                    msleep((1000000000-th_zero_time)/1000000);
+                    if (th_zero_time < 500000000)
+                      need_shrink = 1;
+                    else
+                      need_shrink = 0;
+                  }
+                }
+                worked = 0;
+                if (kthread_should_stop()) {
+                  //printk(KERN_ERR "Stop Kthread\n");
+                  return 0;
+                }
+                cond_resched();
+        }
+        return 0;
 }
+
 
 static void flush(void)
 {
@@ -381,6 +471,8 @@ static void flush(void)
 		spin_lock(&fb_list_lock);
 	}
 	spin_unlock(&fb_list_lock);
+
+        atomic64_set(&total_blocks, 0);
 }
 
 static void monitor_media(void)
@@ -388,15 +480,20 @@ static void monitor_media(void)
 	// Get superblock from dev num
 	struct xfs_mount *mp;
 	uint64_t zblocks;
+	int i, incomplete = 0;
+        int prev_free = 0;
 	mp = XFS_M(real_super);
 	zblocks = atomic64_read(&total_blocks);
 	while(was_on) {
-		int i;
 	//	int idle = 0;
 		char dev_name[6];
 		u64 bfree, pz_blocks;
 		unsigned long read_write, zio, zfree;
 //		printk(KERN_ERR "%s: Keep monitoring...\n", __func__);
+		unsigned int margin = 80 * cur_num_thread;
+                int need_thread = 0, append = 0;
+                incomplete = 0;
+
 		res.MediaReads.Uint64 = 0;
 		res.MediaReads.Uint64_1 = 0;
 		res.MediaWrites.Uint64 = 0;
@@ -440,39 +537,141 @@ static void monitor_media(void)
 				0 : res.MediaWrites.Uint64*64
 					- num_freeing_blocks * 4096;
 
-		num_freeing_blocks = 0;
-		
-		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
-		if (read_write >= 8000)
-			read_write = 8000;
-		zio = min_t(unsigned long, 8000 - read_write, 4000);
-		bfree =	percpu_counter_sum(&mp->m_fdblocks);
-		pz_blocks = (u64) atomic64_read(&total_blocks);
-		zero_ratio = 100 * pz_blocks / ( bfree + pz_blocks );
+		zspeed_monitor = (num_freeing_blocks*4096)/(1<<20);
+                //printk(KERN_ERR "before zspeed %lu\n", zspeed);
+                // long long int total_time = ktime_to_ns(elapsed_time) + ktime_to_ns(elapsed_time);
+                /*
+                if(total_time > 0){
+                        printk(KERN_ERR "zspeed and elapsed_time: %lu MB/s %lu ns\n", zspeed_monitor, total_time);
+                }
+                else{
+                        printk(KERN_ERR "total time is 0 or negative\n");
+                }
+                */
 
-		if(zero_ratio <= 10)
-			zfree = 150;
-		else if(zero_ratio <= 20)
-			zfree = 304;
-		else if(zero_ratio <= 30)
-			zfree = 464;
-		else if(zero_ratio <= 40)
-			zfree = 635;
-		else if(zero_ratio <= 50)
-			zfree = 823;
-		else if(zero_ratio <= 60)
-			zfree = 1039;
-		else if(zero_ratio <= 70)
-			zfree = 1300;
-		else if(zero_ratio <= 80)
-			zfree = 1647;
-		else if(zero_ratio <= 90)
-			zfree = 2208;
-		else
-			zfree = 3969;
+		bfree =	percpu_counter_sum(&mp->m_fdblocks);
+                if (prev_free > bfree + num_freeing_blocks)
+                        append = 1;
+                prev_free = bfree;
+                num_freeing_blocks = 0;
+
+                read_write = (10*read_bytes/25+write_bytes)/(1<<20);
+                if (read_write < 100){
+                        zio = 8000;
+                } else if (read_write > 4500 && append) {
+                        zio = 500;
+                } else if (read_write <= 4500 && append) {
+                        zio = 1500;
+                } else {
+                        zio = 100;
+                }
+
+                if (append) {
+                        pz_blocks = (u64) atomic64_read(&total_blocks);
+                        zero_ratio = 100 * pz_blocks / ( bfree + pz_blocks );
+
+                        if(zero_ratio <= 10)
+                                zfree = 150;
+                        else if(zero_ratio <= 20)
+                                zfree = 304;
+                        else if(zero_ratio <= 30)
+                                zfree = 464;
+                        else if(zero_ratio <= 40)
+                                zfree = 635;
+                        else if(zero_ratio <= 50)
+                                zfree = 823;
+                        else if(zero_ratio <= 60)
+                                zfree = 1039;
+                        else if(zero_ratio <= 70)
+                                zfree = 1300;
+                        else if(zero_ratio <= 80)
+                                zfree = 1647;
+                        else if(zero_ratio <= 90)
+                                zfree = 2208;
+                        else
+                                zfree = 3969;
+                } else  {
+                        zero_ratio = -1;
+                        zfree = 0;
+                }
+
 		zspeed = max(zio, zfree);
-		msleep(1000);
-	}
+                //zio = min_t(u64, 8000 - read_write, 4000);
+
+                for (i=0; i < cur_num_thread; i++) {
+                  if (atomic64_read(&tblocks[i]) > 0)
+                    incomplete = 1;
+                  if (incomplete)
+                    break;
+                }
+
+                if (zspeed_monitor && incomplete) {
+                  need_thread = min_t(u64, (zspeed / (zspeed_monitor / cur_num_thread)) + 1, 4);
+                }
+                else if (need_shrink || zspeed_monitor == 0) {
+                  need_thread = max_t(u64, cur_num_thread - 1, 1);
+                }
+                else
+                  need_thread = cur_num_thread;
+
+                for (i=0; i < need_thread; i++)
+                  atomic64_set(&tblocks[i], (zspeed*1024/4)/need_thread);
+                for (i=need_thread; i < 4; i++)
+                  atomic64_set(&tblocks[i], 0);
+
+                if (need_thread >= 1) {
+                  // if same, just passed
+                  cur_num_thread = manipulate_kthread(need_thread);
+                }
+
+
+                /*
+                if(zspeed > 2000){
+                        zspeed1 = zspeed/2;
+                        zspeed2 = zspeed - zspeed1;
+                }
+                else{
+                        zspeed1 = zspeed;
+                        zspeed2 = 0;
+                }
+                */
+
+
+                /*
+                if (read_write >= 8000)
+                        read_write = 8000;
+                
+                
+                */
+
+                // zspeed = 8000-read_write;
+
+                msleep(1000);
+        }
+}
+
+int manipulate_kthread(unsigned int need_thread) {
+  int i;
+
+  if (need_thread < cur_num_thread) {
+    //stop kthread
+    for (i = need_thread; i < cur_num_thread; i++) {
+      kthread_stop(threads[i]);
+    }
+  }
+  else if (need_thread > cur_num_thread){
+    static struct task_struct **tmp;
+    //create kthread
+    for (i = cur_num_thread; i < need_thread; i++) {
+      tmp = &threads[i];
+      *tmp = kthread_create((int(*)(void*))kt_free_block,
+          &tblocks[i], "kt_free_block");
+      printk(KERN_ERR "Create Kthread %d\n", i+1);
+      wake_up_process(*tmp);
+    }
+  }
+
+  return need_thread;
 }
 
 static int __init kt_free_block_init(void) 
@@ -534,6 +733,17 @@ static int __init kt_free_block_init(void)
 		(pcmd->cmd_buf + sizeof(struct nd_cmd_vendor_hdr)
 		 + pcmd->vendor->in_length);
 	tail->out_length = (u32) 128;
+	
+	threads[0] = thread;
+        threads[1] = thread2;
+        threads[2] = thread3;
+        threads[3] = thread4;
+
+        atomic64_set(&tblocks[0], 0);
+        atomic64_set(&tblocks[1], 0);
+        atomic64_set(&tblocks[2], 0);
+        atomic64_set(&tblocks[3], 0);
+
 	return 1;
 }
 
