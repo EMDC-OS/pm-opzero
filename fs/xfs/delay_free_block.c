@@ -436,7 +436,6 @@ static int kt_free_block(void *data)
                     }
                     cond_resched();
                     worked = 1;
-                
 		}
                 //sleep_time = 1000000000/((zspeed)/40);
                 //if (sleep_time > th_zero_time) {
