@@ -391,6 +391,8 @@ int xfs_free_num_blocks(xfs_extlen_t len, struct free_block_t *tmp_entry)
 			tmp_entry->oi_flags = entry->oi_flags;
 			tmp_entry->skip_discard = entry->skip_discard;
 			list_del(&entry->ls);
+			
+			kmem_cache_free(allocator, entry);
 			spin_unlock(&fb_list_lock);
 
 			len -= tmp_entry->len;
@@ -400,7 +402,6 @@ int xfs_free_num_blocks(xfs_extlen_t len, struct free_block_t *tmp_entry)
 					__func__);
 
 			atomic64_sub(tmp_entry->len, &total_blocks);
-			kmem_cache_free(allocator, entry);
 		}
 
 	}
@@ -417,8 +418,9 @@ static int kt_free_block(void *data)
         atomic64_t *cblk = &((zthread_t*)data)->tblock;
         int worked = 0;
         unsigned long elapsed_time = 0;
-        struct free_block_t *tmp_entry = ((zthread_t*)data)->tmp_entry;
-
+        // struct free_block_t *tmp_entry = ((zthread_t*)data)->tmp_entry;
+	struct free_block_t *tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
+	
         while(was_on) {
                 while (atomic64_read(cblk) > 0) {
                     long cnt = min_t(u64, (long)atomic64_read(cblk), 1000);
@@ -453,7 +455,7 @@ static int kt_free_block(void *data)
                 worked = 0;
                 if (kthread_should_stop()) {
                   //printk(KERN_ERR "Stop Kthread\n");
-                  kmem_cache_free(allocator, tmp_entry);
+		  kmem_cache_free(allocator, tmp_entry);
                   return 0;
                 }
                 cond_resched();
