@@ -923,7 +923,7 @@ int __init kt_free_block_init(void)
         strncpy(blkdev_name, "/dev/pmem0", 10);
 	//tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
 
-	frblk_kobj = kobject_create_and_add("free_blocks", NULL);
+	frblk_kobj = kobject_create_and_add("free_block", NULL);
 	ret = sysfs_create_group(frblk_kobj, &frblk_group);
 	if(ret) {
 		printk("%s: sysfs_create_group() failed. ret=%d\n", __func__,
