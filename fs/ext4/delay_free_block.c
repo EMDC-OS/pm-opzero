@@ -644,7 +644,7 @@ static void monitor_media(void)
 	}
 }
 
-static int __init kt_free_block_init(void) 
+int __init kt_free_block_init(void) 
 {
 	int ret = 0;
 	size_t size;
@@ -708,7 +708,7 @@ static int __init kt_free_block_init(void)
 	return 1;
 }
 
-static void __exit kt_free_block_cleanup(void)
+void __exit kt_free_block_cleanup(void)
 {
 	printk(KERN_INFO "Cleaning up kt_free_block module...\n");
 	kmem_cache_free(ndctl_alloc, pcmd);
