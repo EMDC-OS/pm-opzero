@@ -527,16 +527,9 @@ int ext4_free_num_blocks(long count, struct free_block_t *tmp_entry)
 }
 EXPORT_SYMBOL(ext4_free_num_blocks);
 
-static int kt_free_block(void *data)
+static int kt_free_block(void)
 {
-	//ktime_t start_time, end_time;
-	//struct timeval startTime, endTime;
-        unsigned long th_zero_time;
-        atomic64_t *cblk = &((zthread_t*)data)->tblock;
-	int worked = 0;
-        unsigned long elapsed_time = 0;
-        struct free_block_t *tmp_entry = kmem_cache_alloc(allocator, GFP_KERNEL);
-	/*
+/*	
 	while(was_on) {
 		if((long)atomic64_read(&total_blocks) >= 10000) {
                         //spin_lock(&kt_free_lock);
@@ -552,48 +545,53 @@ static int kt_free_block(void *data)
 	*/
 	// without speed control
 	while(was_on) {
-                while (atomic64_read(cblk) > 0) {
-                    long cnt = min_t(u64, (long)atomic64_read(cblk), 1000);
-		    if((long)atomic64_read(&total_blocks) >= cnt) {
-		    	start_time = ktime_get();
-		    	//gettimeofday(&startTime, NULL);
-                        atomic64_sub(cnt, cblk);
-		    	ext4_free_num_blocks(cnt, tmp_entry);
-		    	num_freeing_blocks += cnt;
-		    	//gettimeofday(&endTime, NULL);
-    		    	//elapsed_time += ( endTime.tv_sec - startTime.tv_sec );
-		    	end_time = ktime_get();
-		    	elapsed_time += ktime_sub(end_time, start_time);
-                        //th_zero_time = ktime_to_ns(ktime_sub(end_time, start_time));
-		    }
-                    cond_resched();
-                    worked = 1;
-                }
-                //sleep_time = 1000000000/((zspeed)/40);
-                //if (sleep_time > th_zero_time) {
-                if (worked) {
-                  th_zero_time = ktime_to_ns(elapsed_time);
-                  //printk(KERN_ERR "elapsedTime : %lu ns\n",  th_zero_time);
-                  if (th_zero_time < 1000000000) {
-                    msleep((1000000000-th_zero_time)/1000000);
-                    if (th_zero_time < 500000000)
-                      need_shrink = 1;
-                    else
-                      need_shrink = 0;
-                  }
-                }
-                worked = 0;
-                if (kthread_should_stop()) {
-                  //printk(KERN_ERR "Stop Kthread\n");
-                  kmem_cache_free(allocator, tmp_entry);
-                  return 0;
-                }
-                cond_resched();
+		long cnt = (long)atomic64_read(&total_blocks);
+		if(cnt) {
+			ext4_free_num_blocks(cnt);
+			num_freeing_blocks += cnt;
+		}
+		msleep(1000);
 	}
-	kmem_cache_free(allocator, tmp_entry);
+	
+/*
+	while(thread_control) {
+		//
+		struct free_block_t *entry;
+		int err;
+		spin_lock(&fb_list_lock);
+		while (!list_empty(&block_list) && thread_control) {
+			err = 0;
+			entry = list_first_entry(&block_list,
+					struct free_block_t, ls);
+			if (entry -> inode == NULL) {
+				list_del(&entry -> ls);
+				spin_unlock(&fb_list_lock);
+
+				atomic64_sub(entry->count, &total_blocks);
+
+				kmem_cache_free(allocator, entry);
+				spin_lock(&fb_list_lock);
+				continue;
+			}
+			list_del(&entry -> ls);
+			spin_unlock(&fb_list_lock);
+
+			num_freeing_blocks += entry->count;
+			err = free_blocks(entry);
+			num_free_blocks += entry->count;
+			
+			atomic64_sub(entry->count, &total_blocks);
+			kmem_cache_free(allocator, entry);
+			count_free_blocks++;
+
+		//
+			spin_lock(&fb_list_lock);
+		}
+		spin_unlock(&fb_list_lock);
+		msleep(1000);
+	}*/
 	return 0;
 }
-
 
 static void flush(void)
 {
