@@ -244,7 +244,6 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 		unsigned long count, int flag)
 {
 	
-	spin_lock(&fb_list_lock);
 	struct free_block_t *new = kmem_cache_alloc(allocator, GFP_KERNEL);
 	if(new) {
 		new -> inode = inode;
@@ -253,6 +252,7 @@ void ext4_delay_free_block(struct inode * inode, ext4_fsblk_t block,
 		new -> count = count;
 	}
 
+	spin_lock(&fb_list_lock);
 	list_add_tail(&new -> ls, &block_list);
 	spin_unlock(&fb_list_lock);
 
