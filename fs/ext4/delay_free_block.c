@@ -690,82 +690,7 @@ static void monitor_media(void)
 		
 		zspeed_monitor = (num_freeing_blocks*4096)/(1<<20);
 		//printk(KERN_ERR "before zspeed %lu\n", zspeed);
-		// long long int total_time = ktime_to_ns(elapsed_time) + ktime_to_ns(elapsed_time);
-                /*
-		if(total_time > 0){
-			printk(KERN_ERR "zspeed and elapsed_time: %lu MB/s %lu ns\n", zspeed_monitor, total_time);
-		}
-		else{
-			printk(KERN_ERR "total time is 0 or negative\n");
-		}
-                */
 		
-/*
-		num_freeing_blocks = 0;
-
-                for (i=0; i < cur_num_thread; i++) {
-                  if (atomic64_read(&tblocks[i]) > 0)
-                    incomplete = 1;
-                  if (incomplete)
-                    break;
-                }
-                  
-                if (zspeed_monitor && incomplete) {
-                  need_thread = min_t(u64, (zspeed / (zspeed_monitor / cur_num_thread)) + 1, 4);
-                } 
-                else if (need_shrink || zspeed_monitor == 0) {
-                  need_thread = max_t(u64, cur_num_thread - 1, 1);
-                }
-                else
-                  need_thread = cur_num_thread;
-
-                for (i=0; i < need_thread; i++)
-                  atomic64_set(&tblocks[i], (zspeed*1024/4)/need_thread);
-                for (i=need_thread; i < 4; i++)
-                  atomic64_set(&tblocks[i], 0);
-
-                if (need_thread >= 1) {
-                  // if same, just passed
-                  cur_num_thread = manipulate_kthread(need_thread);
-                }
-
-		read_write = (10*read_bytes/25+write_bytes)/(1<<20);
-		if (read_write >= 8000)
-			read_write = 8000;
-		
-		zio = min_t(u64, 8000 - read_write, 4000);
-		bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
-			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
-		pz_blocks = (u64) atomic64_read(&total_blocks);
-		zero_ratio = 100 * pz_blocks / ( bfree + pz_blocks );
-		
-		if(zero_ratio <= 10)
-			zfree = 150;
-		else if(zero_ratio <= 20)
-			zfree = 304;
-		else if(zero_ratio <= 30)
-			zfree = 464;
-		else if(zero_ratio <= 40)
-			zfree = 635;
-		else if(zero_ratio <= 50)
-			zfree = 823;
-		else if(zero_ratio <= 60)
-			zfree = 1039;
-		else if(zero_ratio <= 70)
-			zfree = 1300;
-		else if(zero_ratio <= 80)
-			zfree = 1647;
-		else if(zero_ratio <= 90)
-			zfree = 2208;
-		else
-			zfree = 3969;
-		zspeed = max(zio, zfree);
-		
-	
-		// zspeed = 8000-read_write;
-
-		msleep(1000);
-*/
                 bfree =	percpu_counter_sum_positive(&sbi->s_freeclusters_counter)  - 
 			percpu_counter_sum_positive(&sbi->s_dirtyclusters_counter);
 
@@ -775,7 +700,9 @@ static void monitor_media(void)
                 num_freeing_blocks = 0;
 
                 read_write = (10*read_bytes/25+write_bytes)/(1<<20);
-                if (read_write < 100){
+               
+/*	       
+	       if (read_write < 100){
                         zio = 8000;
                 } else if (read_write > 4500 && append) {
                         zio = 500;
@@ -816,6 +743,9 @@ static void monitor_media(void)
 
 		zspeed = max(zio, zfree);
                 //zio = min_t(u64, 8000 - read_write, 4000);
+
+*/
+
 
                 for (i=0; i < cur_num_thread; i++) {
                   if (atomic64_read(&bzthreads[i].tblock) > 0)
