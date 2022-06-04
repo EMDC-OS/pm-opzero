@@ -701,13 +701,13 @@ static void monitor_media(void)
 
                 read_write = (10*read_bytes/25+write_bytes)/(1<<20);
                
-/*	       
+	       
 	       if (read_write < 100){
                         zio = 8000;
                 } else if (read_write > 4500 && append) {
                         zio = 500;
                 } else if (read_write <= 4500 && append) {
-                        zio = 1500;
+                        zio = 1000;
                 } else {
                         zio = 100;
                 }
@@ -744,7 +744,6 @@ static void monitor_media(void)
 		zspeed = max(zio, zfree);
                 //zio = min_t(u64, 8000 - read_write, 4000);
 
-*/
 
 
                 for (i=0; i < cur_num_thread; i++) {
