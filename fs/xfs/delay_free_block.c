@@ -579,7 +579,7 @@ static void monitor_media(void)
                 } else if (read_write > 4500 && append) {
                         zio = 500;
                 } else if (read_write <= 4500 && append) {
-                        zio = 1500;
+                        zio = 1000;
                 } else {
                         zio = 100;
                 }
