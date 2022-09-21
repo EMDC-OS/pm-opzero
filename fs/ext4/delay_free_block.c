@@ -701,7 +701,8 @@ static void monitor_media(void)
 
                 read_write = (10*read_bytes/25+write_bytes)/(1<<20);
                
-
+	
+		/* comments
 	       if (read_write < 100){
                         zio = 8000;
                 } else if (read_write > 4500 && append) {
@@ -743,9 +744,8 @@ static void monitor_media(void)
 
 		zspeed = max(zio, zfree);
                 //zio = min_t(u64, 8000 - read_write, 4000);
-
 		
-
+		*/
 
                 for (i=0; i < cur_num_thread; i++) {
                   if (atomic64_read(&bzthreads[i].tblock) > 0)
