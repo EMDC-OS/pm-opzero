@@ -12,6 +12,14 @@ Our approach introduces an off-critical-path data block sanitization scheme spec
 
 ## Usage
 If you wish to use ext4, you should download the ext4 branch, and if you prefer to use xfs, you should download the xfs branch. After building and installing the kernel you received, you can start the sanitization process in the background as follows:
+
+Adjust appropriately to either ext4 or xfs depending on your desired filesystem.
+```
+git checkout xfs
+# or
+git checkout ext4
+```
+
 ```
 # The directory name for free_inode and the name for frinode_value may vary depending on the situation, but they both start with 'free,' and they both should start with '1.
 echo 1 > /sys/kernel/free_inode/frinode_value
